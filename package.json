@@ -1,0 +1,52 @@
+{
+  "name": "wechat-claude",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/src/electron/main.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "tsx src/cli.ts",
+    "build:app": "tsc -p tsconfig.app.json && node scripts/copy-app-assets.js",
+    "electron:dev": "npm run build:app && electron .",
+    "dist:win": "npm run build:app && electron-builder --win portable --x64",
+    "dist:win:dir": "npm run build:app && electron-builder --win dir --x64",
+    "dist:win:zip": "npm run dist:win:dir && powershell -ExecutionPolicy Bypass -File scripts/package-win-zip.ps1",
+    "check-sdk": "node scripts/check-claude-sdk.js",
+    "app:service": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.0",
+    "qrcode": "^1.5.4",
+    "sql.js": "^1.11.0"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "@types/node": "^22.0.0",
+    "@types/sql.js": "^1.4.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "build": {
+    "appId": "local.wechat-claude",
+    "productName": "WeChat Claude",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "portable"
+      ]
+    }
+  }
+}

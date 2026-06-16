@@ -1,0 +1,706 @@
+# 微信 iLink Bot API 实战文档
+
+本文档记录本项目实际接入微信 iLink Bot API 时使用到的接口、参数、消息结构、加密上传流程和踩坑记录。
+
+这不是腾讯官方 SDK 文档，而是基于当前代码和实测行为整理的维护手册。对应实现主要在：
+
+```text
+src/features/02-wechat-connectivity/wechat/
+```
+
+## 1. 基本约定
+
+| 项目 | 当前值 |
+| --- | --- |
+| API Base URL | `https://ilinkai.weixin.qq.com` |
+| CDN Base URL | `https://novac2c.cdn.weixin.qq.com/c2c` |
+| `channel_version` | `1.0.2` |
+| 登录二维码类型 | `bot_type=3` |
+| JSON Content-Type | `application/json` |
+| CDN 上传 Content-Type | `application/octet-stream` |
+| 普通 API 超时 | 40 秒 |
+| `getupdates` 超时 | 45 秒 |
+| CDN 上传/下载超时 | 30 秒 |
+
+所有认证接口都需要以下 header：
+
+| Header | 值 | 说明 |
+| --- | --- | --- |
+| `AuthorizationType` | `ilink_bot_token` | 固定值 |
+| `Authorization` | `Bearer <bot_token>` | 扫码确认后拿到的 token |
+| `X-WECHAT-UIN` | 随机 base64 字符串 | 当前实现用随机 uint32 转字符串后 base64 |
+
+所有需要 `base_info` 的请求统一使用：
+
+```json
+{
+  "base_info": {
+    "channel_version": "1.0.2"
+  }
+}
+```
+
+## 2. 登录二维码
+
+### 2.1 获取二维码
+
+```http
+GET /ilink/bot/get_bot_qrcode?bot_type=3
+```
+
+不需要认证 header。
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `qrcode` | string | 后续轮询状态用的二维码标识 |
+| `qrcode_img_content` | string | 可能是 base64 图片，也可能是二维码 URL |
+| `baseurl` | string, optional | 服务端返回的 base URL，当前实现默认仍使用 `https://ilinkai.weixin.qq.com` |
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| `qrcode_img_content` 有时不是纯 base64 | 如果以 `http` 开头，用 `qrcode` 包把 URL 重新生成二维码 PNG |
+| 有时带 `data:image/png;base64,` 前缀 | 写文件前需要剥掉 data URL 前缀 |
+| 没有 token 时服务不能直接退出 | 正式服务进入 `waiting_for_login`，保留管理面板让用户扫码 |
+
+### 2.2 查询二维码状态
+
+```http
+GET /ilink/bot/get_qrcode_status?qrcode=<urlencoded qrcode>
+```
+
+不需要认证 header。
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | string | `pending`、`scanned`、`confirmed`、`expired`、`cancelled` |
+| `bot_token` | string, optional | 仅 `confirmed` 时返回 |
+| `baseurl` | string, optional | 服务端返回的 base URL |
+
+当前登录流程：
+
+```text
+get_bot_qrcode -> 保存二维码图片 -> 每 1500ms 查询状态 -> confirmed 后写 bot_token.txt
+```
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| 保存 token 后，当前长轮询不会热替换 token | 管理面板提示重启服务 |
+| 二维码会过期 | `expired` 或 `cancelled` 直接失败，用户刷新二维码 |
+| 查询时间不能无限长 | 当前实现最长等待 180 秒 |
+
+## 3. 长轮询接收消息
+
+```http
+POST /ilink/bot/getupdates
+```
+
+需要认证 header。
+
+请求体：
+
+```json
+{
+  "get_updates_buf": "",
+  "base_info": {
+    "channel_version": "1.0.2"
+  }
+}
+```
+
+请求参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `get_updates_buf` | string | 是 | 游标。首次启动传空字符串，之后必须回传服务端上次给的新值 |
+| `base_info.channel_version` | string | 是 | 固定 `1.0.2` |
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ret` | number | 返回码，非 0 应记录原始响应排查 |
+| `msgs` | array, optional | 微信消息数组 |
+| `get_updates_buf` | string, optional | 新游标 |
+| `longpolling_timeout_ms` | number, optional | 服务端建议的长轮询等待时间 |
+
+当前轮询策略：
+
+```text
+初始 get_updates_buf = ""
+每次响应后保存新的 get_updates_buf
+只处理 message_type === 1 的用户消息
+普通错误指数退避，最长 30 秒
+401/403 视为 token 失效
+```
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| 同一个 token 同时跑多个 poller 会抢消息 | 正式版本只保留一个 runtime poller，调试监听器不能并行跑 |
+| `get_updates_buf` 不能丢 | 丢失后可能重复收旧消息或漏消息 |
+| HTTP request helper 目前直接解析 JSON，不检查 `res.ok` | 调试失败时要记录原始 `ret` 和响应体 |
+| `message_type` 有方向含义 | 用户发给 bot 是 `1`，bot 发给用户是 `2` |
+| 长轮询请求必须能被 AbortSignal 中断 | 停止服务时要取消正在等待的请求 |
+
+## 4. 入站消息结构
+
+顶层消息：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `from_user_id` | string | 微信用户 ID，例如 `xxx@im.wechat` |
+| `to_user_id` | string | bot ID，例如 `xxx@im.bot` |
+| `message_type` | number | 入站用户消息为 `1` |
+| `message_state` | number | 消息状态 |
+| `context_token` | string | 回复时必须原样带回 |
+| `group_id` | string, optional | 群聊相关字段 |
+| `item_list` | array | 消息气泡内的 item 列表 |
+
+Item 通用字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `type` | number | item 类型 |
+| `create_time_ms` | number, optional | 创建时间 |
+| `update_time_ms` | number, optional | 更新时间 |
+| `is_completed` | boolean, optional | 是否完成 |
+| `msg_id` | string, optional | item 消息 ID |
+| `button_item_list` | array, optional | 按钮类扩展字段 |
+| `ref_msg` | object, optional | 微信引用消息，仅常见于文本 item |
+
+Item 类型：
+
+| type | 名称 | 主要 payload |
+| --- | --- | --- |
+| `1` | 文本 | `text_item` |
+| `2` | 图片 | `image_item` |
+| `3` | 语音 | `voice_item` |
+| `4` | 文件 | `file_item` |
+| `5` | 视频 | `video_item` |
+| `8` | 混合消息 | 当前仅做占位识别 |
+
+文本 item：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `text_item.text` | string | 文本内容 |
+| `ref_msg.text` | string, optional | 被引用消息的文本摘要 |
+| `ref_msg.msg_id` | string, optional | 被引用消息 ID |
+| `ref_msg.from_user_id` | string, optional | 被引用消息发送者 |
+| `ref_msg.message_item` | object, optional | 被引用消息的嵌套 item |
+
+图片 item：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `image_item.aeskey` | string, optional | 入站图片 AES key，注意字段名没有下划线 |
+| `image_item.full_url` | string, optional | 下载 URL |
+| `image_item.url` | string, optional | 下载 URL 备选字段 |
+| `image_item.media` | object, optional | 嵌套媒体结构 |
+| `image_item.mid_size` | number, optional | 图片大小 |
+| `image_item.hd_size` | number, optional | 高清图大小 |
+| `image_item.thumb_size` | number, optional | 缩略图大小 |
+| `image_item.thumb_width` | number, optional | 缩略图宽 |
+| `image_item.thumb_height` | number, optional | 缩略图高 |
+
+语音 item：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `voice_item.media` | object, optional | 媒体下载信息 |
+| `voice_item.trans_text` | string, optional | 微信语音转写字段之一 |
+| `voice_item.text` | string, optional | 微信语音转写字段之一 |
+| `voice_item.recognition_text` | string, optional | 微信语音转写字段之一 |
+| `voice_item.transcript` | string, optional | 微信语音转写字段之一 |
+| `voice_item.transcribed_text` | string, optional | 微信语音转写字段之一 |
+| `voice_item.speech_to_text` | string, optional | 微信语音转写字段之一 |
+| `voice_item.playtime` | number, optional | 语音时长，毫秒 |
+| `voice_item.encode_type` | number, optional | 编码类型 |
+| `voice_item.bits_per_sample` | number, optional | 采样位数 |
+| `voice_item.sample_rate` | number, optional | 采样率 |
+
+文件 item：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `file_item.media` | object, optional | 媒体下载信息 |
+| `file_item.file_name` | string, optional | 文件名 |
+| `file_item.md5` | string, optional | 原文件 MD5 |
+| `file_item.len` | number, optional | 入站为 number，出站发送时为 string |
+
+视频 item：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `video_item.media` | object, optional | 媒体下载信息 |
+| `video_item.video_size` | number, optional | 视频大小 |
+| `video_item.duration_ms` | number, optional | 视频时长 |
+
+媒体结构：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `encrypt_query_param` | string | CDN 下载或发送消息时使用的加密参数 |
+| `aes_key` | string | AES key，入站可能是多种编码，出站必须是 `base64(utf8(hexAesKey))` |
+| `encrypt_type` | number | 当前使用 `1` |
+| `full_url` | string, optional | 完整 CDN URL |
+| `url` | string, optional | 备选 CDN URL |
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| 图片入站 key 有时是 `aeskey`，不是 `aes_key` | 解析时必须同时兼容 `image_item.aeskey` 和 `image_item.media.aes_key` |
+| 语音转写字段名不稳定 | 按 `trans_text`、`text`、`recognition_text`、`transcript`、`transcribed_text`、`speech_to_text` 顺序兜底 |
+| 不要过滤“我发了一段语音” | 用户可能真的说了这句话，不能当成假转写丢弃 |
+| 文件 `len` 入站和出站类型不同 | 入站通常 number，出站必须 string |
+| 引用媒体经常只有文件名或占位信息 | 需要结合本地消息文本索引找 OCR/转写/提取结果 |
+| 引用媒体解析失败不能降级给 AI | 当前产品要求直接回复微信失败原因，不把不完整内容交给 AI |
+
+## 5. 发送文本消息
+
+```http
+POST /ilink/bot/sendmessage
+```
+
+需要认证 header。
+
+请求体：
+
+```json
+{
+  "base_info": {
+    "channel_version": "1.0.2"
+  },
+  "msg": {
+    "from_user_id": "",
+    "to_user_id": "USER_ID",
+    "client_id": "wechat-claude-relay_1780000000000_abc123",
+    "message_type": 2,
+    "message_state": 2,
+    "context_token": "CONTEXT_TOKEN",
+    "item_list": [
+      {
+        "type": 1,
+        "text_item": {
+          "text": "你好"
+        }
+      }
+    ]
+  }
+}
+```
+
+请求参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `base_info.channel_version` | string | 是 | 固定 `1.0.2` |
+| `msg.from_user_id` | string | 是 | bot 发送时传空字符串 |
+| `msg.to_user_id` | string | 是 | 目标用户 ID，通常用入站 `from_user_id` |
+| `msg.client_id` | string | 是 | 客户端生成的唯一 ID |
+| `msg.message_type` | number | 是 | bot 发给用户固定 `2` |
+| `msg.message_state` | number | 是 | 当前固定 `2` |
+| `msg.context_token` | string | 是 | 必须来自对应微信会话的入站消息 |
+| `msg.item_list[].type` | number | 是 | 文本为 `1` |
+| `msg.item_list[].text_item.text` | string | 是 | 文本内容 |
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ret` | number | 返回码 |
+| `msg_id` | string, optional | 发送后的消息 ID |
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| `context_token` 错误会导致发送异常或无感失败 | 回复、定时任务和管理后台创建任务都要保存可用 context token |
+| 长文本一次发送容易失败或体验差 | 当前按约 1400 字拆气泡，并在气泡之间延迟 500ms |
+| `from_user_id` 不要填 bot ID | 当前实测 bot 发送时为空字符串 |
+| `client_id` 应唯一 | 当前格式为 `wechat-claude-relay_<timestamp>_<random>` |
+
+## 6. 发送图片和文件
+
+发送媒体分两步：
+
+```text
+getuploadurl -> 上传加密后的二进制到 CDN -> sendmessage 发送媒体 envelope
+```
+
+### 6.1 获取上传 URL
+
+```http
+POST /ilink/bot/getuploadurl
+```
+
+需要认证 header。
+
+请求体：
+
+```json
+{
+  "filekey": "16_BYTE_RANDOM_HEX",
+  "media_type": 1,
+  "to_user_id": "USER_ID",
+  "rawsize": 12345,
+  "rawfilemd5": "RAW_FILE_MD5_HEX",
+  "filesize": 12352,
+  "no_need_thumb": true,
+  "aeskey": "16_BYTE_AES_KEY_HEX",
+  "base_info": {
+    "channel_version": "1.0.2"
+  }
+}
+```
+
+请求参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `filekey` | string | 是 | 随机 16 字节 hex，也就是 32 个 hex 字符 |
+| `media_type` | number | 是 | `1` 图片，`2` 视频，`3` 文件 |
+| `to_user_id` | string | 是 | 目标用户 ID |
+| `rawsize` | number | 是 | 原始文件字节数 |
+| `rawfilemd5` | string | 是 | 原始文件 MD5 hex |
+| `filesize` | number | 是 | AES-ECB PKCS padding 后的加密大小 |
+| `no_need_thumb` | boolean | 否 | 当前图片和文件发送都传 `true` |
+| `aeskey` | string | 是 | 16 字节 AES key 的 hex 字符串 |
+| `base_info.channel_version` | string | 是 | 固定 `1.0.2` |
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ret` | number | 返回码 |
+| `upload_full_url` | string, optional | 完整上传 URL |
+| `upload_param` | string, optional | 如果没有完整 URL，用它拼 CDN URL |
+| `cdn_url` | string, optional | 当前实现不依赖 |
+
+如果只有 `upload_param`，上传 URL 拼法为：
+
+```text
+https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=<urlencoded upload_param>&filekey=<urlencoded filekey>
+```
+
+### 6.2 CDN 加密上传
+
+上传前加密：
+
+| 项目 | 当前实现 |
+| --- | --- |
+| 算法 | `AES-128-ECB` |
+| padding | Node crypto 默认 PKCS padding |
+| key | `aeskey` hex 解码后的 16 字节 |
+| `filesize` | `Math.ceil((rawsize + 1) / 16) * 16` |
+
+上传请求：
+
+```http
+POST <upload_full_url 或拼出的 CDN upload URL>
+Content-Type: application/octet-stream
+
+<encrypted file bytes>
+```
+
+上传成功后必须读取响应 header：
+
+```text
+x-encrypted-param
+```
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| `filesize` 不是原文件大小 | 必须填加密 padding 后大小 |
+| `rawfilemd5` 必须是原文件 MD5 | 不是加密后内容的 MD5 |
+| `aeskey` 和 `media.aes_key` 格式不同 | `getuploadurl.aeskey` 是 hex，`sendmessage.media.aes_key` 是 base64(utf8(hex)) |
+| CDN 响应体不是关键 | 关键字段在 header `x-encrypted-param` |
+| `upload_full_url` 和 `upload_param` 两种响应都可能出现 | 两种都要支持 |
+
+### 6.3 发送图片消息
+
+CDN 上传成功后发送：
+
+```json
+{
+  "base_info": {
+    "channel_version": "1.0.2"
+  },
+  "msg": {
+    "from_user_id": "",
+    "to_user_id": "USER_ID",
+    "client_id": "wechat-claude-relay_1780000000000_abc123",
+    "message_type": 2,
+    "message_state": 2,
+    "context_token": "CONTEXT_TOKEN",
+    "item_list": [
+      {
+        "type": 2,
+        "image_item": {
+          "media": {
+            "encrypt_query_param": "X_ENCRYPTED_PARAM",
+            "aes_key": "BASE64_UTF8_HEX_AES_KEY",
+            "encrypt_type": 1
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+图片参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | number | 是 | 图片固定 `2` |
+| `image_item.media.encrypt_query_param` | string | 是 | CDN 上传返回的 `x-encrypted-param` |
+| `image_item.media.aes_key` | string | 是 | `Buffer.from(aesKeyHex, "utf8").toString("base64")` |
+| `image_item.media.encrypt_type` | number | 是 | 固定 `1` |
+| `image_item.mid_size` | number | 否 | 当前发送图片不填 |
+
+### 6.4 发送文件消息
+
+CDN 上传成功后发送：
+
+```json
+{
+  "base_info": {
+    "channel_version": "1.0.2"
+  },
+  "msg": {
+    "from_user_id": "",
+    "to_user_id": "USER_ID",
+    "client_id": "wechat-claude-relay_1780000000000_abc123",
+    "message_type": 2,
+    "message_state": 2,
+    "context_token": "CONTEXT_TOKEN",
+    "item_list": [
+      {
+        "type": 4,
+        "file_item": {
+          "media": {
+            "encrypt_query_param": "X_ENCRYPTED_PARAM",
+            "aes_key": "BASE64_UTF8_HEX_AES_KEY",
+            "encrypt_type": 1
+          },
+          "file_name": "result.txt",
+          "len": "12345"
+        }
+      }
+    ]
+  }
+}
+```
+
+文件参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `type` | number | 是 | 文件固定 `4` |
+| `file_item.media.encrypt_query_param` | string | 是 | CDN 上传返回的 `x-encrypted-param` |
+| `file_item.media.aes_key` | string | 是 | `Buffer.from(aesKeyHex, "utf8").toString("base64")` |
+| `file_item.media.encrypt_type` | number | 是 | 固定 `1` |
+| `file_item.file_name` | string | 是 | 文件名，不含路径 |
+| `file_item.len` | string | 是 | 原始文件大小字符串 |
+
+## 7. 下载和解密入站媒体
+
+入站图片、语音、文件、视频会带 CDN 下载信息。当前下载逻辑：
+
+```text
+优先使用 media.full_url 或 full_url
+否则用 encrypt_query_param 拼 /download?encrypt_query_param=...
+下载密文
+用 AES-128-ECB 解密
+写入 session/incoming
+```
+
+下载 URL 拼法：
+
+```text
+https://novac2c.cdn.weixin.qq.com/c2c/download?encrypt_query_param=<urlencoded encrypt_query_param>
+```
+
+AES key 兼容格式：
+
+| 格式 | 说明 |
+| --- | --- |
+| 32 位 hex | 直接按 hex 解码成 16 字节 |
+| base64(hex string) | 先 base64 解码成 32 位 hex，再按 hex 解码 |
+| base64(raw 16 bytes) | base64 解码后刚好 16 字节 |
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| 入站和出站 AES key 格式不完全一致 | 下载侧必须做多格式兼容 |
+| 有些消息只有 URL 没有 key，或只有 key 没有 URL | 不能给 AI 假装成功，媒体处理要返回失败 |
+| 语音不需要把 silk 文件交给 AI | 优先使用微信转写文本；如果没有转写，再按产品要求回复失败或提示重发 |
+| 引用图片/文件不需要把原文件传给 AI | 应使用预处理后的 OCR 或文本抽取结果 |
+
+## 8. 正在输入状态
+
+### 8.1 获取配置
+
+```http
+POST /ilink/bot/getconfig
+```
+
+需要认证 header，请求体为空对象：
+
+```json
+{}
+```
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ret` | number | 返回码 |
+| `typing_ticket` | string, optional | 调用 `sendtyping` 所需 ticket |
+
+### 8.2 发送正在输入
+
+```http
+POST /ilink/bot/sendtyping
+```
+
+需要认证 header。
+
+请求体：
+
+```json
+{
+  "to_user_id": "USER_ID",
+  "context_token": "CONTEXT_TOKEN",
+  "typing_ticket": "TYPING_TICKET"
+}
+```
+
+请求参数：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `to_user_id` | string | 是 | 目标用户 ID |
+| `context_token` | string | 是 | 当前会话 context token |
+| `typing_ticket` | string | 是 | `getconfig` 返回 |
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| `getconfig` 可能不返回 `typing_ticket` | 当前实现打印 `Typing disabled` 并自动降级为 no-op |
+| typing 不是核心功能 | 不应因为 typing 失败中断消息处理 |
+| context token 仍然重要 | typing 和 sendmessage 一样需要当前会话 token |
+
+## 9. 引用消息处理
+
+微信引用通常出现在文本 item 的 `ref_msg` 上：
+
+```json
+{
+  "type": 1,
+  "text_item": {
+    "text": "用户的新问题"
+  },
+  "ref_msg": {
+    "msg_id": "OLD_MSG_ID",
+    "text": "被引用的文本摘要",
+    "from_user_id": "USER_ID",
+    "message_item": {
+      "type": 2,
+      "image_item": {}
+    }
+  }
+}
+```
+
+当前产品规则：
+
+| 场景 | 行为 |
+| --- | --- |
+| 引用纯文本 | 直接把引用文本拼进给 AI 的用户输入 |
+| 引用语音 | 使用历史索引里的微信转写文本 |
+| 引用图片 | 使用历史索引里的 OCR 文本 |
+| 引用文件 | 使用历史索引里的文本抽取结果 |
+| 引用媒体解析失败 | 不调用 AI，直接回复微信失败说明 |
+| 新对话中引用旧消息 | 仍应通过公共消息文本索引查找，不只依赖当前 Claude 会话上下文 |
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| `ref_msg.text` 对媒体常常只是文件名或 `[图片]` | 不能当作真实内容给 AI |
+| `ref_msg.message_item` 可能缺少完整 media 字段 | 需要本地保存 msg_id、fileName、mediaKey 与预处理文本的索引 |
+| 引用失败不能静默降级 | 产品要求明确告诉用户“引用内容未能成功解析” |
+
+## 10. 自动发送文件
+
+Claude 工作区中约定：
+
+```text
+working/output_weixin/
+```
+
+新文件会被扫描并自动发送回微信。发送后写 `.sent.json` 去重。
+
+当前发送路径：
+
+```text
+Claude 生成文件 -> output_weixin -> runtime 扫描 -> sendImage 或 sendFile -> 微信
+```
+
+踩坑：
+
+| 问题 | 处理 |
+| --- | --- |
+| 需要避免重复发送 | 用 `.sent.json` 记录已发送文件 |
+| 图片和普通文件走不同 item 类型 | 图片用 `type=2`，其他文件用 `type=4` |
+| 发送文件仍依赖最近可用 context token | 自动发送必须绑定触发任务的微信会话 |
+
+## 11. 调试建议
+
+关键日志：
+
+| 文件 | 说明 |
+| --- | --- |
+| `.wechat-claude/logs/service.log` | 正式服务日志 |
+| `.wechat-claude/logs/quote-listener.jsonl` | 引用消息原始字段调试记录 |
+| `.wechat-claude/bridge-data/relay.sqlite` | 会话、消息、引用索引、定时任务数据库 |
+
+建议调试顺序：
+
+1. 先确认只有一个服务进程在轮询同一个 bot token。
+2. 确认 `bot_token.txt` 存在且服务已重启。
+3. 看 `getupdates` 是否收到消息，特别是 `message_type`、`context_token`、`item_list`。
+4. 发送失败时看 `sendmessage` 请求体里的 `to_user_id`、`context_token`、`message_type`、`message_state`。
+5. 媒体失败时看 `getuploadurl` 是否返回 `upload_full_url` 或 `upload_param`。
+6. CDN 上传失败时确认 `filesize` 是 padding 后大小，且读取了 `x-encrypted-param` header。
+7. 引用失败时看 `quote-listener.jsonl` 和 SQLite 中的消息文本索引。
+
+## 12. 代码索引
+
+| 文件 | 作用 |
+| --- | --- |
+| `src/features/02-wechat-connectivity/wechat/api.ts` | HTTP client、登录、轮询、发送、上传 URL、typing |
+| `src/features/02-wechat-connectivity/wechat/types.ts` | API 类型和消息结构 |
+| `src/features/02-wechat-connectivity/wechat/auth.ts` | 二维码登录和 token 保存 |
+| `src/features/02-wechat-connectivity/wechat/poller.ts` | 长轮询和入站消息解析 |
+| `src/features/02-wechat-connectivity/wechat/sender.ts` | 文本、图片、文件发送 |
+| `src/features/02-wechat-connectivity/wechat/media.ts` | 入站 CDN 下载和解密 |
+| `src/features/02-wechat-connectivity/wechat/crypto.ts` | AES、MD5、client_id、X-WECHAT-UIN |
+| `src/runtime/wechat-runtime.ts` | 正式 runtime 的微信发送包装、多气泡和 typing |
+| `src/features/04-bridge/bridge.ts` | 引用、媒体预处理、AI 桥接和自动发送文件 |
