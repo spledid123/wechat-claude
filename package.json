@@ -41,6 +41,16 @@
       "node_modules/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "scripts/preprocess.py",
+        "to": "scripts/preprocess.py"
+      },
+      {
+        "from": "scripts/preprocess-requirements.txt",
+        "to": "scripts/preprocess-requirements.txt"
+      }
+    ],
     "asar": true,
     "win": {
       "signAndEditExecutable": false,

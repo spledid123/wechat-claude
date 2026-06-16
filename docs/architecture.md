@@ -114,6 +114,8 @@ src/features/04-bridge/
 - 引用图片/文件/语音时，使用历史索引中的文本内容。
 - 若引用媒体无法解析，不降级给 AI，而是直接向微信返回失败说明。
 
+PDF/图片/Office 预处理依赖正式资源 `scripts/preprocess.py`。图片使用 PaddleOCR，PDF/Office 使用 markitdown；目标机器需要单独准备 Python `.venv` 或通过 `WECHAT_CLAUDE_PYTHON` 指定 Python。普通聊天和微信收发不需要 Python。
+
 ### 3.4 消息编排
 
 模块：
@@ -271,7 +273,7 @@ src/features/01-claude-dialogue/db/migrations/
 - `electron-builder`：Windows 打包。
 - `@types/node`、`@types/sql.js`：类型声明。
 
-用户运行 exe 时不需要安装 Node.js 或 npm；但 Claude Agent SDK 的认证/可用性仍依赖本机环境和网络。
+用户运行 exe 时不需要安装 Node.js 或 npm；但 Claude Agent SDK 的认证/可用性仍依赖本机环境和网络。正式运行时会读取系统环境变量、程序目录 `.env` 和数据目录 `.wechat-claude/.env`，不把密钥打进 exe，也不要求迁移开发目录里的 `.claude/`。
 
 ## 七、构建与打包
 

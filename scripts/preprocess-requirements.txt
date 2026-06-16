@@ -1,0 +1,4 @@
+markitdown[all]
+paddleocr
+paddlepaddle
+onnxruntime

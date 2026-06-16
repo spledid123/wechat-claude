@@ -130,7 +130,10 @@ export class WechatClaudeService {
       this.claude = new ClaudeManager(this.maxClaudeConcurrency);
       const sm = new SessionManager(this.paths.workspaceBase, this.sessionTimeoutMinutes);
       const cm = new ConversationManager();
-      const pp = new FilePreprocessor();
+      const pp = new FilePreprocessor({
+        appRoot: this.paths.repoRoot,
+        dataDir: this.paths.dataDir,
+      });
       const sendWechatText: ReturnType<typeof createWechatSendText> = botToken
         ? createWechatSendText(botToken)
         : async () => {

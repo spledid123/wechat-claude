@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, nativeImage, shell, Tray } from "electron";
 import path from "node:path";
+import { loadRuntimeEnv } from "../runtime/env.js";
 import { WechatClaudeService } from "../runtime/service.js";
 import { resolveAppRoot } from "./paths.js";
 
@@ -19,13 +20,10 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    const appRoot = getAppRoot();
+    loadRuntimeEnv({ appRoot });
     service = new WechatClaudeService({
-      repoRoot: resolveAppRoot({
-        isPackaged: app.isPackaged,
-        execPath: process.execPath,
-        cwd: process.cwd(),
-        portableDir: process.env.PORTABLE_EXECUTABLE_DIR,
-      }),
+      repoRoot: appRoot,
     });
     createTray();
     await service.start();
@@ -137,13 +135,10 @@ async function restartService(): Promise<void> {
   if (!service) return;
   updateTrayMenu();
   await service.stop();
+  const appRoot = getAppRoot();
+  loadRuntimeEnv({ appRoot });
   service = new WechatClaudeService({
-    repoRoot: resolveAppRoot({
-      isPackaged: app.isPackaged,
-      execPath: process.execPath,
-      cwd: process.cwd(),
-      portableDir: process.env.PORTABLE_EXECUTABLE_DIR,
-    }),
+    repoRoot: appRoot,
   });
   await service.start();
   updateTrayMenu();
@@ -175,6 +170,15 @@ function showError(title: string, err: unknown): void {
   if (tray) {
     tray.displayBalloon({ title, content: message.slice(0, 240) });
   }
+}
+
+function getAppRoot(): string {
+  return resolveAppRoot({
+    isPackaged: app.isPackaged,
+    execPath: process.execPath,
+    cwd: process.cwd(),
+    portableDir: process.env.PORTABLE_EXECUTABLE_DIR,
+  });
 }
 
 function renderStatusHtml(status: ReturnType<WechatClaudeService["getStatus"]> | undefined): string {

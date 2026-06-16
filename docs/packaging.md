@@ -53,6 +53,78 @@ src/features/
 
 `test/` 仅保留回归测试和历史分阶段测试文档，正式打包不从 `test/features` 引用代码。
 
+## 运行机依赖边界
+
+最终用户只运行 exe 时，不需要安装：
+
+- Node.js / npm。
+- 项目 `node_modules/`。
+- Claude Code SDK / Claude Agent SDK npm 包。
+- 项目 `.venv/`。
+- 开发目录 `.claude/`。
+- 源码目录 `src/`、`test/`、`scripts/`。
+
+portable exe 已包含 Electron/Node 运行时、编译后的应用代码、`@anthropic-ai/claude-agent-sdk`、Windows x64 的 `claude.exe`、`sql.js`、`qrcode` 和数据库迁移文件。
+
+可能仍需要外部提供：
+
+- Claude/DeepSeek/Anthropic 认证配置：系统环境变量、exe 同目录 `.env` 或 `.wechat-claude\.env`。
+- 网络：微信 iLink Bot API 和模型 API。
+- Python：仅当启用 PDF/图片/Office 预处理能力时需要；普通聊天和微信收发不需要。
+
+## PDF / 图片解析能力
+
+正式预处理能力按 `test/features/03-file-preprocessing/README.md` 验收：
+
+- 图片：`.png .jpg .jpeg .gif .bmp .webp` 走 PaddleOCR。
+- 文档：`.pdf .docx .doc .xlsx .xls .pptx .ppt` 走 markitdown。
+- 文本：`.txt .py .js .csv .json .md .log` 等直接读取。
+- 失败不阻断主流程，错误会进入 `preprocessingError`。
+
+打包时会把以下文件放进运行资源：
+
+```text
+scripts/preprocess.py
+scripts/preprocess-requirements.txt
+```
+
+目标机器如果需要 PDF/图片解析，推荐在 exe 同目录准备：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
+```
+
+也可以通过环境变量或 `.env` 指定其他 Python：
+
+```text
+WECHAT_CLAUDE_PYTHON=D:\Tools\wechat-python\.venv\Scripts\python.exe
+WECHAT_CLAUDE_PREPROCESS_TIMEOUT_MS=60000
+WECHAT_CLAUDE_PREPROCESS_MAX_CHARS=50000
+```
+
+本机用 `test/pic` 完整验证过：
+
+```powershell
+node_modules\.bin\tsx.cmd scripts\preprocess-test.ts
+```
+
+验证结果覆盖 PDF、PNG、JPG、DOCX、XLSX 和文本样本，均能输出 `OK`。
+
+迁移给用户时有三种交付方式：
+
+| 方式 | 内容 | 适用场景 |
+| --- | --- | --- |
+| 全新普通使用 | exe + 可选 `.env` | 不需要历史数据，不需要 PDF/图片解析 |
+| 迁移旧数据 | exe + 可选 `.env` + 旧 `.wechat-claude/` | 保留 token、历史、定时任务、工作区 |
+| 在线安装解析能力 | exe + 可选 `.env` + `scripts/preprocess-requirements.txt`，目标机运行 `python -m venv .venv` 和 `pip install -r scripts/preprocess-requirements.txt` | 目标机可联网，最稳 |
+| 指定已有 Python | exe + `.env`，在 `.env` 里设置 `WECHAT_CLAUDE_PYTHON` | 目标机已有统一 Python 环境 |
+| 离线拷贝 `.venv` | exe + `.venv/` + `.env` + `.wechat-claude/` | 离线机器；体积大，兼容性需实测 |
+
+.wechat-claude/ 不需要手动空建，程序首次运行会自动创建。只有迁移旧 token、历史对话、定时任务或工作区时才复制旧目录。
+
+不建议把 `.venv` 打进单文件 portable exe。当前本机 `.venv` 约 1.7GB，且 PaddleOCR 模型缓存可能在用户目录；直接打包会让产物巨大，并可能因为 venv 绑定本机 Python 路径而降低可迁移性。
+
 ## 数据目录
 
 打包后默认数据目录是 exe 所在目录下的：
@@ -93,6 +165,32 @@ release\WeChat Claude 0.1.0.exe
 - `bridge-data\relay.sqlite`
 - `workspaces\`
 - `logs\`
+
+## Claude SDK 配置
+
+exe 不内置任何 Claude/DeepSeek 密钥，也不依赖迁移开发目录中的 `.claude/`。
+
+运行时会按顺序读取：
+
+1. 系统环境变量。
+2. exe 同目录的 `.env`。
+3. 数据目录里的 `.wechat-claude\.env`。
+
+`.env` 示例：
+
+```text
+ANTHROPIC_API_KEY=...
+ANTHROPIC_AUTH_TOKEN=...
+ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+ANTHROPIC_MODEL=deepseek-v4-pro[1m]
+ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]
+ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-pro[1m]
+ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash
+CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash
+CLAUDE_CODE_EFFORT_LEVEL=max
+```
+
+如果目标机器已经配置了系统环境变量，则不需要额外文件。若需要迁移，只复制 exe、`.wechat-claude/` 和可选 `.env` 即可。
 
 ## 构建命令
 

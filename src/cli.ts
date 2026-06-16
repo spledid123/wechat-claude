@@ -1,5 +1,7 @@
-import "../scripts/load-env.js";
+import { loadRuntimeEnv } from "./runtime/env.js";
 import { WechatClaudeService } from "./runtime/service.js";
+
+loadRuntimeEnv({ appRoot: process.cwd() });
 
 const service = new WechatClaudeService();
 let shutdownRequested = false;
