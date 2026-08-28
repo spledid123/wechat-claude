@@ -7,7 +7,6 @@ WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信�
 ## 当前状态
 
 - 正式源码在 `src/`，核心业务模块在 `src/features/`。
-- `test/` 保留为回归测试和历史分阶段文档；正式运行时不再从 `test/features` 引用代码。
 - 本地数据默认写入程序所在目录旁边的 `.wechat-claude/`，不会提交到 git。
 - Windows portable exe 通过 `electron-builder` 生成，产物在 `release/`，不会提交到 git。
 
@@ -66,20 +65,13 @@ npm run dist:win:zip
 
 生成目录版并压缩为 zip。
 
-## 测试
+## 类型检查
 
 ```powershell
-npm test
-npx tsc --noEmit
+npm run build:app
 ```
 
-重点回归：
-
-```powershell
-npm test -- test/runtime/service.test.ts test/runtime/electron-main.test.ts
-```
-
-注意：部分测试仍然使用 `test/features` 中的历史实现，用于保留阶段性回归；正式运行时代码已经迁移到 `src/features`。
+测试套件已移除（旧套件验证的是 `test/features` 中的历史代码拷贝，而非 `src/` 真实代码，参考价值有限；历史版本可从 git 记录找回）。改动后至少跑一次上面的编译命令确认类型无误。
 
 ## 目录结构
 
@@ -91,7 +83,6 @@ src/electron/        Electron 托盘入口
 src/types/           生产构建需要的补充类型声明
 scripts/             正式构建、启动和打包脚本
 docs/                使用、架构、打包说明
-test/                回归测试与历史分阶段测试文档
 ```
 
 ## 本地数据和忽略规则
