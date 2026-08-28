@@ -5,7 +5,7 @@
  * (text, voice transcription, quoted messages, CDN URLs, etc.)
  */
 
-import { getUpdates } from "./api.js";
+import { getUpdates, HttpError } from "./api.js";
 import type { WeixinMessage, MessageItem } from "./types.js";
 
 export interface ParsedMessage {
@@ -45,6 +45,14 @@ export interface PollerCallbacks {
   onMessage: (msg: ParsedMessage) => void;
   onError?: (err: Error) => void;
   onReconnect?: (delayMs: number) => void;
+  /**
+   * Called when the bot_token starts being rejected (HTTP 401/403), and again
+   * once it recovers. `stale=true` means the token just went stale; `stale=false`
+   * means a poll succeeded again. Polling does NOT stop — the iLink token revives
+   * on activity, so we keep polling and auto-recover on the next successful poll
+   * (e.g. right after the user sends a message).
+   */
+  onAuthError?: (err: Error, stale: boolean) => void;
 }
 
 export async function startPolling(
@@ -54,6 +62,7 @@ export async function startPolling(
 ): Promise<void> {
   let getUpdatesBuf = "";
   let consecutiveErrors = 0;
+  let authStale = false;
 
   while (!signal?.aborted) {
     try {
@@ -66,7 +75,19 @@ export async function startPolling(
         signal,
       );
 
+      // A nonzero ret with no messages means the server rejected the poll at
+      // the application layer (e.g. a stale token returning HTTP 200). Treat
+      // it as an error and back off instead of spinning in a tight hot loop.
+      if (res.ret && res.ret !== 0) {
+        throw new HttpError(401, `getupdates returned ret=${res.ret}`);
+      }
+
       consecutiveErrors = 0;
+      // A successful poll means the token is live again.
+      if (authStale) {
+        authStale = false;
+        callbacks.onAuthError?.(new Error("bot_token recovered"), false);
+      }
       if (res.get_updates_buf) {
         getUpdatesBuf = res.get_updates_buf;
       }
@@ -74,7 +95,13 @@ export async function startPolling(
       if (res.msgs?.length) {
         for (const msg of res.msgs) {
           if (msg.message_type !== 1) continue;
-          callbacks.onMessage(parseMessage(msg));
+          // Isolate per-message handler failures: one bad message must not
+          // skip the rest of the batch or be counted as a network error.
+          try {
+            callbacks.onMessage(parseMessage(msg));
+          } catch (handlerErr) {
+            callbacks.onError?.(handlerErr as Error);
+          }
         }
       }
     } catch (err) {
@@ -82,12 +109,21 @@ export async function startPolling(
 
       consecutiveErrors++;
       const isAuthError =
-        err instanceof Error &&
-        (err.message.includes("401") || err.message.includes("403"));
+        err instanceof HttpError && (err.status === 401 || err.status === 403);
 
       if (isAuthError) {
-        callbacks.onError?.(new Error("Auth error: bot_token may be invalid."));
-        return;
+        // The iLink token goes stale on inactivity but revives on activity and
+        // does NOT require re-scanning the QR. So keep polling with a short,
+        // fixed backoff — the next successful poll (e.g. right after the user
+        // sends a WeChat message) recovers automatically. Notify once per
+        // stale→live transition so the UI can hint without log spam.
+        if (!authStale) {
+          authStale = true;
+          callbacks.onAuthError?.(err as Error, true);
+        }
+        callbacks.onReconnect?.(AUTH_RETRY_DELAY_MS);
+        await sleep(AUTH_RETRY_DELAY_MS, signal);
+        continue;
       }
 
       callbacks.onError?.(err as Error);
@@ -97,6 +133,9 @@ export async function startPolling(
     }
   }
 }
+
+/** Backoff between polls while the token is stale (kept short for fast recovery). */
+const AUTH_RETRY_DELAY_MS = 10_000;
 
 export function parseMessage(msg: WeixinMessage): ParsedMessage {
   const result: ParsedMessage = {

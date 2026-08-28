@@ -1,5 +1,10 @@
 PRAGMA foreign_keys = OFF;
 
+-- Drop any leftover temp tables from a previously interrupted run of this
+-- migration so a retry does not fail with "table already exists".
+DROP TABLE IF EXISTS scheduled_tasks_new;
+DROP TABLE IF EXISTS scheduled_task_drafts_new;
+
 CREATE TABLE scheduled_tasks_new (
     id              TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL,

@@ -12,6 +12,24 @@ import path from "node:path";
 
 const CDN_BASE = "https://novac2c.cdn.weixin.qq.com/c2c";
 
+/** Hard cap on a single downloaded media file (bytes) to avoid OOM. */
+const MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
+
+/**
+ * Reduce a sender-supplied file name to a safe basename that always lands
+ * inside `outputDir`. Strips any directory components (so `..\..\evil.bat`
+ * becomes `evil.bat`) and illegal characters; falls back to a generic name.
+ */
+function safeFileName(fileName: string): string {
+  // Take the last path segment regardless of / or \ separators.
+  const base = fileName.split(/[/\\]/).pop() ?? "";
+  const cleaned = base
+    .replace(/[<>:"|?*]/g, "_")
+    .replace(/^\.+/, "")
+    .trim();
+  return cleaned || `file_${Date.now()}`;
+}
+
 /**
  * Decode a WeChat AES key from one of two formats:
  *   Format 1: 32-char hex string → 16 bytes directly
@@ -60,7 +78,8 @@ export async function downloadFromCdn(
   // Decode AES key
   const key = decodeAesKey(aesKeyRaw);
   if (!key) {
-    console.error(`  CDN key decode failed: ${aesKeyRaw.slice(0, 30)}...`);
+    // Never log the key material itself.
+    console.error("  CDN key decode failed (unrecognized key format)");
     return null;
   }
 
@@ -69,30 +88,48 @@ export async function downloadFromCdn(
     ? downloadUrlOrParam
     : `${CDN_BASE}/download?encrypt_query_param=${encodeURIComponent(downloadUrlOrParam)}`;
 
+  const controller = new AbortController();
+  // The timeout must cover the whole transfer, not just the response headers —
+  // clearing it right after fetch() resolves leaves body streaming unguarded
+  // (a stalled CDN connection would hang forever).
+  const timer = setTimeout(() => controller.abort(), 60_000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30_000);
-
     const response = await fetch(downloadUrl, {
       method: "GET",
       signal: controller.signal,
     });
-    clearTimeout(timer);
 
     if (!response.ok) {
       console.error(`  CDN ${response.status}: ${downloadUrl.slice(0, 100)}`);
       return null;
     }
 
+    // Reject oversized files up front when the CDN advertises a length.
+    const declaredLen = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLen) && declaredLen > MAX_DOWNLOAD_BYTES) {
+      console.error(
+        `  CDN file too large: ${declaredLen} bytes (max ${MAX_DOWNLOAD_BYTES})`,
+      );
+      return null;
+    }
+
     const encrypted = Buffer.from(await response.arrayBuffer());
+    if (encrypted.length > MAX_DOWNLOAD_BYTES) {
+      console.error(
+        `  CDN file too large after download: ${encrypted.length} bytes`,
+      );
+      return null;
+    }
     const decrypted = decryptAesEcb(encrypted, key); // decrypt already handles PKCS7
 
-    const filePath = path.join(outputDir, fileName);
+    const filePath = path.join(outputDir, safeFileName(fileName));
     fs.writeFileSync(filePath, decrypted);
-    console.log(`  CDN OK: ${fileName} (${decrypted.length} bytes)`);
+    console.log(`  CDN OK: ${path.basename(filePath)} (${decrypted.length} bytes)`);
     return filePath;
   } catch (err) {
     console.error(`  CDN err: ${(err as Error).message}`);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }

@@ -12,6 +12,24 @@ import initSqlJs, {
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+
+/**
+ * Resolve the bundled sql.js WASM file. Without this, `initSqlJs()` tries to
+ * locate `sql-wasm.wasm` relative to the module dir, which fails once the app
+ * is packed into an asar archive. `asarUnpack` (see package.json build config)
+ * keeps the file on disk; Electron transparently redirects the asar path to the
+ * unpacked copy, so passing the resolved path here works in both dev and prod.
+ */
+function locateSqlWasm(file: string): string {
+  try {
+    return require.resolve(`sql.js/dist/${file}`);
+  } catch {
+    return file;
+  }
+}
 
 // --------------- module-level state ---------------
 let SQL: SqlJsStatic | null = null;
@@ -37,7 +55,7 @@ export async function initializeDatabase(
 
   // Load sql.js WASM (cached after first call)
   if (!SQL) {
-    SQL = await initSqlJs();
+    SQL = await initSqlJs({ locateFile: locateSqlWasm });
   }
 
   // Open existing or create new
@@ -59,7 +77,18 @@ export async function initializeDatabase(
 export function saveDatabase(): void {
   if (!db || !dbPath) return;
   const data = db.export();
-  fs.writeFileSync(dbPath, Buffer.from(data));
+  // Atomic write: serialize to a temp file, fsync, then rename over the target.
+  // A crash mid-write leaves the original DB intact instead of a truncated,
+  // unopenable file ("file is not a database").
+  const tmpPath = `${dbPath}.tmp`;
+  const fd = fs.openSync(tmpPath, "w");
+  try {
+    fs.writeSync(fd, Buffer.from(data));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmpPath, dbPath);
 }
 
 export function closeDatabase(): void {
@@ -106,10 +135,13 @@ export function queryAll<T = Record<string, unknown>>(
   }
 
   const results: T[] = [];
-  while (stmt.step()) {
-    results.push(stmt.getAsObject() as unknown as T);
+  try {
+    while (stmt.step()) {
+      results.push(stmt.getAsObject() as unknown as T);
+    }
+  } finally {
+    stmt.free();
   }
-  stmt.free();
   return results;
 }
 
@@ -194,11 +226,23 @@ function runMigrations(): void {
     if (applied.has(version)) continue;
 
     const sql = fs.readFileSync(path.join(migrationsDir, file), "utf-8");
-    db.run(sql);
-    db.run(
-      "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
-      [version, file],
-    );
+    // Wrap each migration + its version bump in a single transaction so a
+    // partially-applied migration (e.g. 004 rebuilds a table) rolls back
+    // cleanly instead of leaving orphan tables that break the next startup.
+    db.run("BEGIN");
+    try {
+      db.run(sql);
+      db.run(
+        "INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (?, ?)",
+        [version, file],
+      );
+      db.run("COMMIT");
+    } catch (err) {
+      db.run("ROLLBACK");
+      throw new Error(
+        `Migration ${file} failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   ensureMessageTextIndexColumns();

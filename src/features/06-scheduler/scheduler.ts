@@ -125,6 +125,7 @@ export class SchedulerEngine {
   private readonly expireOnceTasksAfterMs: number;
   private readonly sendText: SchedulerSendText;
   private readonly runAgent?: SchedulerRunAgent;
+  private runningDueTasks = false;
 
   constructor(options: SchedulerEngineOptions) {
     ensureSchedulerTables();
@@ -300,6 +301,19 @@ export class SchedulerEngine {
   }
 
   async runDueTasks(): Promise<ScheduledTaskRecord[]> {
+    // Re-entrancy guard: a slow task (e.g. an agent call) can outlast the tick
+    // interval. Without this, the next tick re-selects the same still-active row
+    // and fires it a second time (double reminders / double agent spend).
+    if (this.runningDueTasks) return [];
+    this.runningDueTasks = true;
+    try {
+      return await this.runDueTasksInner();
+    } finally {
+      this.runningDueTasks = false;
+    }
+  }
+
+  private async runDueTasksInner(): Promise<ScheduledTaskRecord[]> {
     this.cleanupExpiredDrafts();
 
     const now = this.now();
@@ -313,36 +327,45 @@ export class SchedulerEngine {
     const executed: ScheduledTaskRecord[] = [];
     for (const row of rows) {
       const task = mapTaskRow(row);
-      if (task.mode === "send_text") {
-        await this.sendText({
-          toUserId: task.userId,
-          contextToken: task.contextToken,
-          text: task.payloadText,
-        });
-      } else {
-        if (!this.runAgent) {
+      try {
+        if (task.mode === "send_text") {
           await this.sendText({
             toUserId: task.userId,
             contextToken: task.contextToken,
-            text: `定时任务“${task.title}”需要触发 AI，但当前未配置 Agent。`,
+            text: task.payloadText,
           });
         } else {
-          const reply = await this.runAgent({
-            userId: task.userId,
-            contextToken: task.contextToken,
-            prompt: task.payloadText,
-            task,
-          });
-          await this.sendText({
-            toUserId: task.userId,
-            contextToken: task.contextToken,
-            text: reply.trim() || "(empty response)",
-          });
+          if (!this.runAgent) {
+            await this.sendText({
+              toUserId: task.userId,
+              contextToken: task.contextToken,
+              text: `定时任务“${task.title}”需要触发 AI，但当前未配置 Agent。`,
+            });
+          } else {
+            const reply = await this.runAgent({
+              userId: task.userId,
+              contextToken: task.contextToken,
+              prompt: task.payloadText,
+              task,
+            });
+            await this.sendText({
+              toUserId: task.userId,
+              contextToken: task.contextToken,
+              text: reply.trim() || "(empty response)",
+            });
+          }
         }
+        executed.push(task);
+      } catch (err) {
+        // One failing task (e.g. an expired context token) must not block the
+        // other due tasks this tick. Log and continue.
+        console.error(
+          `[scheduler] task "${task.title}" (${task.id}) failed: ${(err as Error).message}`,
+        );
       }
-
+      // Always advance next_run_at even on failure, so a permanently-broken
+      // task does not re-fire on every single tick and starve the others.
       this.markTaskRan(task, now);
-      executed.push(task);
     }
     this.cleanupExpiredTasks();
     return executed;

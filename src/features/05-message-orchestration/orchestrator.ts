@@ -173,7 +173,10 @@ export class MessageOrchestrator {
     const last = batch.inputs[batch.inputs.length - 1];
     const debounceMs = this.windowForMessage(last.msg);
     return setTimeout(() => {
-      void this.flushBatch(batch);
+      // The timer path has no awaiting caller, so an unhandled rejection here
+      // would crash the whole process. flushBatch already reports failures to
+      // the user (see runFlush); swallow the rejection to stay alive.
+      void this.flushBatch(batch).catch(() => undefined);
     }, debounceMs);
   }
 
@@ -220,6 +223,20 @@ export class MessageOrchestrator {
       this.recordBufferedTurn(batch, "merged");
       const reply = await this.bridge.handleMessages(batch.inputs, { deliverReply: false });
       await this.sendReplyBubbles(last.fromUserId, last.contextToken, reply);
+    } catch (err) {
+      // Never let a batch failure become an unhandled rejection (which would
+      // take down the process) or vanish silently — tell the user their
+      // messages could not be processed so they can retry.
+      console.error(`[orchestrator] flush failed: ${(err as Error).message}`);
+      try {
+        await this.sendText({
+          toUserId: last.fromUserId,
+          contextToken: last.contextToken,
+          text: "抱歉，处理刚才的消息时出错了，请稍后重试。",
+        });
+      } catch {
+        /* the send channel itself is down; nothing more we can do */
+      }
     } finally {
       typingHandle.stop();
     }

@@ -263,6 +263,7 @@ export function splitLongText(text: string, maxLen = 1400): string[] {
   let remaining = text;
 
   while (remaining.length > maxLen) {
+    // Prefer breaking at a natural boundary (newline / sentence end).
     let splitAt = remaining.lastIndexOf("\n", maxLen);
     if (splitAt < maxLen * 0.5) {
       splitAt = remaining.lastIndexOf("。", maxLen);
@@ -270,12 +271,22 @@ export function splitLongText(text: string, maxLen = 1400): string[] {
     if (splitAt < maxLen * 0.5) {
       splitAt = remaining.lastIndexOf(". ", maxLen);
     }
-    if (splitAt < 1) {
-      splitAt = maxLen;
+
+    let cut: number;
+    if (splitAt >= 1) {
+      // Include the boundary character in the current chunk.
+      cut = splitAt + 1;
+    } else {
+      // Hard cut at maxLen. Never exceed it (the old `+1` overran the limit),
+      // and never slice through a UTF-16 surrogate pair (which would corrupt an
+      // emoji into an invalid lone surrogate).
+      cut = maxLen;
+      const code = remaining.charCodeAt(cut - 1);
+      if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
     }
 
-    chunks.push(remaining.slice(0, splitAt + 1).trim());
-    remaining = remaining.slice(splitAt + 1).trim();
+    chunks.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
   }
 
   if (remaining) chunks.push(remaining);

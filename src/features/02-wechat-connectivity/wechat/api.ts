@@ -60,10 +60,28 @@ async function request<T>(
       body: opts.body ? JSON.stringify(opts.body) : undefined,
       signal: controller.signal,
     });
+    // Surface HTTP errors instead of blindly JSON-parsing them. Error pages are
+    // usually HTML, which would otherwise throw an opaque "Unexpected token '<'"
+    // and hide the status code — breaking auth-failure (401/403) detection.
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "");
+      throw new HttpError(res.status, bodyText.slice(0, 200));
+    }
     return (await res.json()) as T;
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", abortFromCaller);
+  }
+}
+
+/** HTTP error carrying the status code so callers can detect auth failures. */
+export class HttpError extends Error {
+  constructor(
+    public readonly status: number,
+    body = "",
+  ) {
+    super(`HTTP ${status}${body ? `: ${body}` : ""}`);
+    this.name = "HttpError";
   }
 }
 
