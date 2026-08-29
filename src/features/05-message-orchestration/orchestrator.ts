@@ -1,6 +1,7 @@
 import { MULTI_BUBBLE_SEPARATOR, MAX_BUBBLES } from "../01-claude-dialogue/prompt-builder.js";
 import { getDb } from "../01-claude-dialogue/db/connection.js";
 import { getRootLogger } from "../../runtime/logger.js";
+import { DEFAULT_CONFIG, type RuntimeConfig } from "../../runtime/config.js";
 import type { ConversationManager } from "../01-claude-dialogue/conversation/manager.js";
 import type { SessionManager } from "../01-claude-dialogue/session/manager.js";
 import type {
@@ -32,6 +33,9 @@ export interface OrchestratorOptions {
   mediaDebounceMs?: number;
   maxDebounceMs?: number;
   scheduler?: SchedulerEngine;
+  /** Live config source — debounce windows are read per batch so admin
+   *  panel edits apply to the next message without a restart. */
+  getConfig?: () => RuntimeConfig;
 }
 
 const DEFAULT_TEXT_DEBOUNCE_MS = 3000;
@@ -44,6 +48,7 @@ export class MessageOrchestrator {
   private readonly mediaDebounceMs: number;
   private readonly maxDebounceMs: number;
   private readonly scheduler?: SchedulerEngine;
+  private readonly getConfig?: () => RuntimeConfig;
   private readonly pending = new Map<string, PendingBatch>();
   private readonly inFlight = new Set<Promise<void>>();
 
@@ -59,6 +64,7 @@ export class MessageOrchestrator {
     this.mediaDebounceMs = options.mediaDebounceMs ?? DEFAULT_MEDIA_DEBOUNCE_MS;
     this.maxDebounceMs = options.maxDebounceMs ?? DEFAULT_MAX_DEBOUNCE_MS;
     this.scheduler = options.scheduler;
+    this.getConfig = options.getConfig;
   }
 
   async receiveMessage(
@@ -110,7 +116,7 @@ export class MessageOrchestrator {
     this.clearTimer(existing);
 
     const age = now - existing.startedAt;
-    if (age >= this.maxDebounceMs) {
+    if (age >= this.currentDebounce().max) {
       await this.flushBatch(existing);
       return;
     }
@@ -182,7 +188,18 @@ export class MessageOrchestrator {
   }
 
   private windowForMessage(msg: ParsedMessage): number {
-    return this.hasMedia(msg) ? this.mediaDebounceMs : this.textDebounceMs;
+    const debounce = this.currentDebounce();
+    return this.hasMedia(msg) ? debounce.media : debounce.text;
+  }
+
+  /** Debounce windows come from the live config; constructor values are the fallback. */
+  private currentDebounce(): { text: number; media: number; max: number } {
+    const config = this.getConfig?.();
+    return {
+      text: config?.debounceTextMs ?? this.textDebounceMs,
+      media: config?.debounceMediaMs ?? this.mediaDebounceMs,
+      max: config?.debounceMaxMs ?? this.maxDebounceMs,
+    };
   }
 
   private hasMedia(msg: ParsedMessage): boolean {

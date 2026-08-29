@@ -251,7 +251,7 @@ electron-builder 还会自动下载并缓存 NSIS 相关包，例如 `nsis-3.0.4
 
 ## 运行时配置与维护
 
-- `.wechat-claude/config.json`：`imageMode`（direct/split）、`visionModel`、`conversationModel`；管理面板"模型与图片设置"直接读写，对下一条消息生效。
+- `.wechat-claude/config.json`：`imageMode`（direct/split）、`visionModel`、`conversationModel`、消息合并窗口 `debounceTextMs` / `debounceMediaMs` / `debounceMaxMs`（默认 3000/5000/15000，环境变量 `WECHAT_CLAUDE_TEXT_DEBOUNCE_MS` / `WECHAT_CLAUDE_MEDIA_DEBOUNCE_MS` / `WECHAT_CLAUDE_MAX_DEBOUNCE_MS` 可作初始默认值）；管理面板"模型、图片与消息合并设置"直接读写，对下一条消息生效。
 - 日志：`logs/service.log` 按大小轮转（默认 5MB，`WECHAT_CLAUDE_LOG_MAX_MB`）；每条消息的原始报文按发送者记录在 `logs/quote/<发送者>.jsonl`，管理面板可查看和删除。
 - 存储清理：启动时自动执行，turns 保留 7 天、过期会话与孤儿工作区目录保留 30 天（`WECHAT_CLAUDE_RETENTION_DAYS`，0 关闭）；引用索引 `message_text_index` 永不清理。
 - 数据目录整体搬迁后无需手工修正：会话工作区路径在下次使用时自动重映射到当前目录。

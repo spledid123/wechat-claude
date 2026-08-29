@@ -214,7 +214,10 @@ export class WechatClaudeService {
         cm,
         typingService,
         sendWechatText,
-        { scheduler: this.scheduler },
+        {
+          scheduler: this.scheduler,
+          getConfig: () => readConfig(this.paths.dataDir),
+        },
       );
       this.schedulerTimer = setInterval(() => {
         void this.scheduler?.runDueTasks().catch((err) => {

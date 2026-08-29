@@ -116,6 +116,12 @@ function nonEmptyOr(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function boundedInt(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === "number" ? value : Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
 export function createAdminServer(options: AdminServerOptions): AdminServer {
   return new AdminServer(options);
 }
@@ -297,6 +303,9 @@ export class AdminServer {
         imageMode: body.imageMode === "split" ? "split" : "direct",
         visionModel: nonEmptyOr(body.visionModel, current.visionModel),
         conversationModel: nonEmptyOr(body.conversationModel, current.conversationModel),
+        debounceTextMs: boundedInt(body.debounceTextMs, current.debounceTextMs, 200, 600_000),
+        debounceMediaMs: boundedInt(body.debounceMediaMs, current.debounceMediaMs, 200, 600_000),
+        debounceMaxMs: boundedInt(body.debounceMaxMs, current.debounceMaxMs, 1_000, 1_800_000),
       };
       writeConfig(this.options.dataDir, next);
       this.sendJson(res, 200, { ok: true, settings: next });
@@ -847,15 +856,20 @@ function renderAdminPage(): string {
     </section>
 
     <section class="wide">
-      <h2>模型与图片设置</h2>
+      <h2>模型、图片与消息合并设置</h2>
       <form id="settingsForm" class="stack">
         <div class="grid">
           <label>图片模式<select name="imageMode"><option value="direct">直连：图片直接进对话（对话模型=视觉模型）</option><option value="split">分离：图片先转文字，对话用对话模型</option></select></label>
           <label>视觉模型<input name="visionModel" placeholder="deepseek-v4-flash-vision-exp"></label>
           <label>对话模型（分离模式使用）<input name="conversationModel" placeholder="deepseek-v4-flash"></label>
         </div>
+        <div class="grid">
+          <label>文本合并窗口（毫秒）<input name="debounceTextMs" type="number" min="200" max="600000" step="100" placeholder="3000"></label>
+          <label>媒体合并窗口（毫秒）<input name="debounceMediaMs" type="number" min="200" max="600000" step="100" placeholder="5000"></label>
+          <label>最大累计上限（毫秒）<input name="debounceMaxMs" type="number" min="1000" max="1800000" step="500" placeholder="15000"></label>
+        </div>
+        <div class="tiny">窗口：消息发出后等待合并的时间，来新消息会重新计时；上限：一批消息累计多久后强制发送。对下一条消息生效，无需重启。</div>
         <button type="submit">保存设置</button>
-        <div class="tiny">保存后对下一条消息生效，无需重启。</div>
       </form>
     </section>
 
@@ -959,6 +973,9 @@ function renderAdminPage(): string {
       form.elements.imageMode.value = settings.imageMode;
       form.elements.visionModel.value = settings.visionModel;
       form.elements.conversationModel.value = settings.conversationModel;
+      form.elements.debounceTextMs.value = settings.debounceTextMs;
+      form.elements.debounceMediaMs.value = settings.debounceMediaMs;
+      form.elements.debounceMaxMs.value = settings.debounceMaxMs;
     }
 
     async function loadQuoteFiles() {
@@ -1018,6 +1035,9 @@ function renderAdminPage(): string {
           imageMode: form.get("imageMode"),
           visionModel: form.get("visionModel"),
           conversationModel: form.get("conversationModel"),
+          debounceTextMs: Number(form.get("debounceTextMs")),
+          debounceMediaMs: Number(form.get("debounceMediaMs")),
+          debounceMaxMs: Number(form.get("debounceMaxMs")),
         }),
       });
       await loadSettings();
