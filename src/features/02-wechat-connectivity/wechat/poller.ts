@@ -10,6 +10,8 @@ import type { WeixinMessage, MessageItem } from "./types.js";
 
 export interface ParsedMessage {
   raw: WeixinMessage;
+  /** Server-side message id (survives quotes); item msg_id is v1:-scoped. */
+  messageId?: string;
   text: string;
   itemTypes: string[];
   voiceText?: string;
@@ -140,6 +142,7 @@ const AUTH_RETRY_DELAY_MS = 10_000;
 export function parseMessage(msg: WeixinMessage): ParsedMessage {
   const result: ParsedMessage = {
     raw: msg,
+    messageId: msg.message_id,
     text: "",
     itemTypes: [],
     cdnUrls: [],
@@ -151,7 +154,7 @@ export function parseMessage(msg: WeixinMessage): ParsedMessage {
   for (const item of msg.item_list ?? []) {
     result.itemTypes.push(itemTypeName(item.type));
     result.itemMeta.push({
-      msgId: item.msg_id,
+      msgId: msg.message_id ?? item.msg_id,
       createTimeMs: item.create_time_ms,
       isCompleted: item.is_completed,
     });
@@ -191,7 +194,7 @@ export function parseMessage(msg: WeixinMessage): ParsedMessage {
           aesKey,
           itemType: "image",
           encryptQueryParam: img.media?.encrypt_query_param,
-          msgId: item.msg_id,
+          msgId: msg.message_id ?? item.msg_id,
         });
       }
     }
@@ -215,7 +218,7 @@ export function parseMessage(msg: WeixinMessage): ParsedMessage {
           aesKey: voice.media?.aes_key || "",
           itemType: "voice",
           encryptQueryParam: voice.media?.encrypt_query_param,
-          msgId: item.msg_id,
+          msgId: msg.message_id ?? item.msg_id,
         });
       }
       if (voice.media?.aes_key) result.aesKeys.push(voice.media.aes_key);
@@ -235,7 +238,7 @@ export function parseMessage(msg: WeixinMessage): ParsedMessage {
           aesKey: file.media?.aes_key || "",
           itemType: "file",
           encryptQueryParam: file.media?.encrypt_query_param,
-          msgId: item.msg_id,
+          msgId: msg.message_id ?? item.msg_id,
         });
       }
       if (file.media?.aes_key) result.aesKeys.push(file.media.aes_key);
@@ -251,7 +254,7 @@ export function parseMessage(msg: WeixinMessage): ParsedMessage {
           aesKey: video.media?.aes_key || "",
           itemType: "video",
           encryptQueryParam: video.media?.encrypt_query_param,
-          msgId: item.msg_id,
+          msgId: msg.message_id ?? item.msg_id,
         });
       }
       if (video.media?.aes_key) result.aesKeys.push(video.media.aes_key);

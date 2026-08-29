@@ -249,7 +249,7 @@ function describeHttpError(status: number, body: string): string {
 
 function readTimeoutEnv(): number {
   const raw = process.env.WECHAT_CLAUDE_VISION_TIMEOUT_MS;
-  if (!raw) return 60_000;
+  if (!raw) return 90_000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 90_000;
 }

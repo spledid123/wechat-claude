@@ -43,6 +43,8 @@ export interface GetUpdatesResponse {
 // --------------- Message ---------------
 
 export interface WeixinMessage {
+  /** Server-side message id — the same id a later quote references. */
+  message_id?: string;
   from_user_id: string; // "o9cq800kum_xxx@im.wechat"
   to_user_id: string; // "e06c1ceea05e@im.bot"
   message_type: number; // 1=user→bot, 2=bot→user

@@ -11,6 +11,8 @@ export interface QuoteDebugRecord {
   quotedMessage: ParsedMessage["quotedMessage"] | null;
   rawRefMsgs: unknown[];
   rawItems: ParsedMessage["raw"]["item_list"];
+  /** Complete raw message, kept for protocol analysis. */
+  raw: ParsedMessage["raw"];
 }
 
 export function appendQuoteDebugRecord(
@@ -55,5 +57,8 @@ function buildQuoteDebugRecord(msg: ParsedMessage): QuoteDebugRecord {
     quotedMessage: msg.quotedMessage ?? null,
     rawRefMsgs,
     rawItems: msg.raw.item_list,
+    // Full raw message so unknown top-level fields (potential server-side
+    // message ids etc.) stay inspectable for protocol analysis.
+    raw: msg.raw,
   };
 }

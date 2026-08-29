@@ -153,29 +153,39 @@ POST /ilink/bot/getupdates
 
 ## 4. 入站消息结构
 
-顶层消息：
+顶层消息（2026-08 实测全字段）：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
+| `message_id` | **number** | **服务端消息 ID，引用时的匹配键**。19 位整数，见下方大数陷阱 |
+| `seq` | number | 会话内递增序号 |
 | `from_user_id` | string | 微信用户 ID，例如 `xxx@im.wechat` |
 | `to_user_id` | string | bot ID，例如 `xxx@im.bot` |
-| `message_type` | number | 入站用户消息为 `1` |
-| `message_state` | number | 消息状态 |
+| `client_id` | string | 客户端投递标识，含投递时间后缀 |
+| `message_type` | number | 入站用户消息为 `1`，bot 消息为 `2` |
+| `message_state` | number | 实测入站为 `2` |
+| `create_time_ms` / `update_time_ms` | number | 毫秒时间戳 |
+| `delete_time_ms` | number | 实测为 `0` |
 | `context_token` | string | 回复时必须原样带回 |
-| `group_id` | string, optional | 群聊相关字段 |
+| `session_id` / `group_id` | string | 实测为空串 |
+| `root_id` / `parent_id` | number | 实测为 `0` |
 | `item_list` | array | 消息气泡内的 item 列表 |
+
+> **大数陷阱（关键）**：`message_id` 以 JSON **数字**下发（19 位，超过 JS 安全整数 2^53），`JSON.parse` 会静默舍入损坏它。而引用消息嵌套里的 `msg_id` 是**字符串**，精确无损——一边被污染一边精确，按 id 匹配永远失败，且无任何报错。
+> **解决**：本项目在 `api.ts` 解析前把 `message_id`/`msg_id` 的 15 位以上裸数字正则转为字符串再 parse，三边（入站索引、引用查询、出站 msg_id）统一使用精确字符串 id。
 
 Item 通用字段：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `type` | number | item 类型 |
-| `create_time_ms` | number, optional | 创建时间 |
+| `create_time_ms` | number, optional | 创建时间（注意：与顶层 `message_id` 对应消息被引用时嵌套里的时间有 1~3 秒投递偏差，图片更大） |
 | `update_time_ms` | number, optional | 更新时间 |
 | `is_completed` | boolean, optional | 是否完成 |
-| `msg_id` | string, optional | item 消息 ID |
+| `msg_id` | string, optional | item 投递 ID，形如 `v1:...`。**与顶层 `message_id` 是两套无关的 id 空间**，仅用于投递去重，不能用于引用匹配 |
 | `button_item_list` | array, optional | 按钮类扩展字段 |
-| `ref_msg` | object, optional | 微信引用消息，仅常见于文本 item |
+| `at_bot_username_list` | array, optional | 实测为空 |
+| `ref_msg` | object, optional | 微信引用消息，仅出现在文本 item 上 |
 
 Item 类型：
 
@@ -188,15 +198,14 @@ Item 类型：
 | `5` | 视频 | `video_item` |
 | `8` | 混合消息 | 当前仅做占位识别 |
 
-文本 item：
+文本 item 的引用（`ref_msg`，2026-08 实测真实形态）：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `text_item.text` | string | 文本内容 |
-| `ref_msg.text` | string, optional | 被引用消息的文本摘要 |
-| `ref_msg.msg_id` | string, optional | 被引用消息 ID |
-| `ref_msg.from_user_id` | string, optional | 被引用消息发送者 |
-| `ref_msg.message_item` | object, optional | 被引用消息的嵌套 item |
+| `ref_msg.message_item` | object | **唯一**的嵌套内容，字段仅有 `type`（恒 0，无类型信息）、`msg_id`（**字符串**，服务端 id，可精确匹配）、`create_time_ms`、`update_time_ms`、`is_completed`、`button_item_list`、`at_bot_username_list` |
+| `ref_msg.text` | — | **实测不存在**（纯文本引用也不带摘要） |
+| `ref_msg.msg_id` | — | **实测不存在**（id 在嵌套 `message_item.msg_id` 里） |
+| `ref_msg.from_user_id` | — | **实测不存在** |
 
 图片 item：
 
@@ -263,8 +272,8 @@ Item 类型：
 | 语音转写字段名不稳定 | 按 `trans_text`、`text`、`recognition_text`、`transcript`、`transcribed_text`、`speech_to_text` 顺序兜底 |
 | 不要过滤“我发了一段语音” | 用户可能真的说了这句话，不能当成假转写丢弃 |
 | 文件 `len` 入站和出站类型不同 | 入站通常 number，出站必须 string |
-| 引用媒体经常只有文件名或占位信息 | 需要结合本地消息文本索引找 OCR/转写/提取结果 |
-| 引用媒体解析失败不能降级给 AI | 当前产品要求直接回复微信失败原因，不把不完整内容交给 AI |
+| 引用媒体经常只有文件名或占位信息 | 需要结合本地消息文本索引找 vision 描述/转写/提取结果 |
+| 引用媒体解析失败不能静默丢弃 | 注入"引用内容未能解析"提示，由 AI 建议用户重发原始媒体 |
 
 ## 5. 发送文本消息
 
@@ -549,7 +558,7 @@ AES key 兼容格式：
 | 入站和出站 AES key 格式不完全一致 | 下载侧必须做多格式兼容 |
 | 有些消息只有 URL 没有 key，或只有 key 没有 URL | 不能给 AI 假装成功，媒体处理要返回失败 |
 | 语音不需要把 silk 文件交给 AI | 优先使用微信转写文本；如果没有转写，再按产品要求回复失败或提示重发 |
-| 引用图片/文件不需要把原文件传给 AI | 应使用预处理后的 OCR 或文本抽取结果 |
+| 引用图片/文件不需要把原文件传给 AI | 应使用索引里的 vision 描述+转录（图片）或文本抽取结果（文件） |
 
 ## 8. 正在输入状态
 
@@ -608,44 +617,50 @@ POST /ilink/bot/sendtyping
 
 ## 9. 引用消息处理
 
-微信引用通常出现在文本 item 的 `ref_msg` 上：
+引用出现在文本 item 的 `ref_msg` 上。**2026-08 实测真实结构**（与早期文档记载差异很大）：
 
 ```json
 {
   "type": 1,
-  "text_item": {
-    "text": "用户的新问题"
-  },
+  "text_item": { "text": "这是？" },
   "ref_msg": {
-    "msg_id": "OLD_MSG_ID",
-    "text": "被引用的文本摘要",
-    "from_user_id": "USER_ID",
     "message_item": {
-      "type": 2,
-      "image_item": {}
+      "type": 0,
+      "create_time_ms": 1788018470000,
+      "update_time_ms": 1788018470000,
+      "is_completed": true,
+      "msg_id": "7499493032427617800",
+      "button_item_list": [],
+      "at_bot_username_list": []
     }
   }
 }
 ```
 
+要点：
+
+1. `ref_msg` 只有 `message_item` 一个字段；没有 `text` 摘要、没有 `from_user_id`、没有媒体信息（aeskey/URL 全无，**无法从引用重新取回媒体**）
+2. 嵌套 `msg_id` 是字符串、精确；它指向**原消息顶层的 `message_id`**（不是 item 的 `v1:` id）
+3. 嵌套 `create_time_ms` 是原消息的发送时间（秒级截断），与投递时间差 1~3 秒（图片更大）——仅作辅助信息，不作匹配键
+
 当前产品规则：
 
 | 场景 | 行为 |
 | --- | --- |
-| 引用纯文本 | 直接把引用文本拼进给 AI 的用户输入 |
-| 引用语音 | 使用历史索引里的微信转写文本 |
-| 引用图片 | 使用历史索引里的 OCR 文本 |
-| 引用文件 | 使用历史索引里的文本抽取结果 |
-| 引用媒体解析失败 | 不调用 AI，直接回复微信失败说明 |
-| 新对话中引用旧消息 | 仍应通过公共消息文本索引查找，不只依赖当前 Claude 会话上下文 |
+| 引用任何已索引消息 | 按精确服务端 `msg_id` 查 `message_text_index`，把索引文本以 `[引用内容: ...]` 前缀注入 |
+| 跨对话引用 | 天然支持（索引按用户全局存储，不分会话） |
+| 引用图片/文件 | 注入的是解析文本（vision 描述+转录 / markitdown），**不会把原图重发给 AI**（引用元数据里无下载信息；本地 incoming/ 副本可用于未来增强） |
+| 引用 agent 发出的图片 | 出站图片发送后按 sendmessage 返回的 `msg_id` 异步提取入库，同样可被引用 |
+| 索引查不到 | 消息**不丢弃**：注入 `[引用的消息内容未能解析...]` 提示，由 AI 建议用户重发 |
 
-踩坑：
+踩坑（历史结论，引以为鉴）：
 
 | 问题 | 处理 |
 | --- | --- |
-| `ref_msg.text` 对媒体常常只是文件名或 `[图片]` | 不能当作真实内容给 AI |
-| `ref_msg.message_item` 可能缺少完整 media 字段 | 需要本地保存 msg_id、fileName、mediaKey 与预处理文本的索引 |
-| 引用失败不能静默降级 | 产品要求明确告诉用户“引用内容未能成功解析” |
+| `message_id` 是 19 位 JSON 数字，`JSON.parse` 静默舍入 | 解析前把 15 位以上裸数字转字符串（`api.ts` 统一处理），否则引用永远匹配不上且无报错 |
+| 顶层 `message_id`（服务端）与 item `msg_id`（`v1:` 投递 id）是两套无关 id 空间 | 索引和引用必须统一用服务端 `message_id`；`v1:` id 只能做投递去重 |
+| 早期版本读 `ref_msg.msg_id`（不存在的字段）导致引用解析恒空 | id 在 `ref_msg.message_item.msg_id` |
+| 引用失败不能静默降级 | 明确注入"未能解析"提示，不吞用户消息 |
 
 ## 10. 自动发送文件
 

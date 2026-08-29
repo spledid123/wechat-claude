@@ -566,11 +566,14 @@ export class Bridge {
     fromUserId: string,
   ): void {
     for (const item of msg.raw.item_list ?? []) {
-      if (!item.msg_id) continue;
+      // Prefer the server-side message id: it is what a later quote will
+      // reference. The v1:-scoped item id never matches a quote.
+      const itemId = msg.messageId ?? item.msg_id;
+      if (!itemId) continue;
       const textContent = extractMessageItemText(item);
       if (!textContent?.trim()) continue;
       this.cm.saveMessageText({
-        msgId: item.msg_id,
+        msgId: itemId,
         userId,
         sessionId,
         fromUserId,

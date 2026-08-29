@@ -50,6 +50,7 @@ export class ClaudeManager {
 
   /** Get an existing session or create a new one. */
   getOrCreateSession(spec: SessionSpec): ClaudeSession {
+    this.evictIdleSessions();
     const existing = this.sessions.get(spec.sessionId);
     if (existing) {
       // The model is a per-query attribute. When the runtime config switches
@@ -112,6 +113,7 @@ export class ClaudeManager {
 
   /** Live status for the admin panel (safe to call at any time). */
   snapshot(): AgentStatusSnapshot {
+    this.evictIdleSessions();
     return {
       maxConcurrent: this.semaphore,
       busyCount: this.activeCount,
@@ -144,6 +146,23 @@ export class ClaudeManager {
     });
     if (this.recentQueries.length > 20) {
       this.recentQueries.length = 20;
+    }
+  }
+
+  /**
+   * Session wrappers are stateless (context comes from DB history), so idle
+   * ones can be dropped. Without this the map — and the admin panel's
+   * session table — grows until restart.
+   */
+  private evictIdleSessions(idleMs = 60 * 60 * 1000): void {
+    const cutoff = Date.now() - idleMs;
+    for (const [id, session] of this.sessions) {
+      if (session.getIsProcessing()) continue;
+      const last = session.getLastQueryAt();
+      if (!last) continue;
+      if (new Date(last).getTime() < cutoff) {
+        this.sessions.delete(id);
+      }
     }
   }
 

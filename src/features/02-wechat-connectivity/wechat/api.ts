@@ -67,7 +67,16 @@ async function request<T>(
       const bodyText = await res.text().catch(() => "");
       throw new HttpError(res.status, bodyText.slice(0, 200));
     }
-    return (await res.json()) as T;
+    // WeChat's server-side message ids (message_id, and msg_id in quote
+    // refs) are 19-digit integers. JSON.parse() rounds anything above 2^53,
+    // silently corrupting them (the quote's nested msg_id arrives as a string
+    // and survives exactly — so the two would never match). Quote large
+    // integer literals into strings before parsing to keep ids exact.
+    const rawText = await res.text();
+    return JSON.parse(rawText.replace(
+      /("(?:message_id|msg_id)"\s*:\s*)(-?\d{15,})/g,
+      '$1"$2"',
+    )) as T;
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener("abort", abortFromCaller);
