@@ -165,7 +165,10 @@ export function parseMessage(msg: WeixinMessage): ParsedMessage {
         let quotedText = normalizeText(item.ref_msg.text);
         if (!quotedText) quotedText = extractMessageItemText(nested);
         result.quotedMessage = {
-          msgId: item.ref_msg.msg_id,
+          // WeChat keeps the quoted message's id on the INNER message_item;
+          // ref_msg.msg_id itself is usually absent. Read both so the quote
+          // index lookup has a key to match against.
+          msgId: nested?.msg_id ?? item.ref_msg.msg_id,
           text: quotedText || undefined,
           fromUser: item.ref_msg.from_user_id,
           itemType: nested?.type ? itemTypeName(nested.type) : undefined,

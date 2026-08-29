@@ -22,6 +22,7 @@ import type {
   QrCodeStatusResponse,
 } from "../02-wechat-connectivity/wechat/types.js";
 import { readConfig, writeConfig, type RuntimeConfig } from "../../runtime/config.js";
+import type { AgentStatusSnapshot } from "../01-claude-dialogue/claude/manager.js";
 
 export interface AdminAuthProvider {
   getQrCode(): Promise<QrCodeResponse>;
@@ -35,6 +36,8 @@ export interface AdminServerOptions {
   workspaceBase: string;
   tokenFile: string;
   scheduler: SchedulerEngine;
+  /** Live Claude-manager status for the admin panel; null before startup. */
+  agentStatus?: () => AgentStatusSnapshot | null;
   startedAt?: Date;
   now?: () => Date;
   authProvider?: AdminAuthProvider;
@@ -254,6 +257,18 @@ export class AdminServer {
       return;
     }
 
+    const sessionMessages = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages$/);
+    if (method === "GET" && sessionMessages) {
+      this.sendJson(res, 200, {
+        ok: true,
+        ...this.listSessionMessages(decodeURIComponent(sessionMessages[1]), {
+          limit: parsePositiveInt(url.searchParams.get("limit")),
+          before: parsePositiveInt(url.searchParams.get("before")),
+        }),
+      });
+      return;
+    }
+
     const sessionDelete = url.pathname.match(/^\/api\/sessions\/([^/]+)$/);
     if (method === "DELETE" && sessionDelete) {
       this.sendJson(res, 200, {
@@ -309,6 +324,26 @@ export class AdminServer {
       };
       writeConfig(this.options.dataDir, next);
       this.sendJson(res, 200, { ok: true, settings: next });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/agent-status") {
+      let baseUrlHost = "";
+      try {
+        baseUrlHost = new URL(
+          process.env.ANTHROPIC_BASE_URL ?? "https://api.deepseek.com/anthropic",
+        ).host;
+      } catch {
+        baseUrlHost = "";
+      }
+      this.sendJson(res, 200, {
+        ok: true,
+        agent: {
+          config: readConfig(this.options.dataDir),
+          baseUrlHost,
+          manager: this.options.agentStatus?.() ?? null,
+        },
+      });
       return;
     }
 
@@ -413,8 +448,12 @@ export class AdminServer {
 
   private listConversations(): {
     sessions: SessionRow[];
-    conversations: ConversationRow[];
+    hasMore: boolean;
+    totalSessions: number;
   } {
+    const totalRow = queryOne<{ count: number }>("SELECT COUNT(*) AS count FROM sessions");
+    const limit = 20;
+
     const sessions = queryAll<SessionRow>(
       `SELECT id,
               user_id AS userId,
@@ -431,24 +470,59 @@ export class AdminServer {
               closed_at AS closedAt,
               closed_reason AS closedReason
        FROM sessions
-       ORDER BY last_active_at DESC`,
+       ORDER BY last_active_at DESC
+       LIMIT ?`,
+      [limit + 1],
     );
 
-    const conversations = queryAll<ConversationRow>(
-      `SELECT id,
-              session_id AS sessionId,
-              seq_in_session AS seqInSession,
+    const hasMore = sessions.length > limit;
+    if (hasMore) sessions.length = limit;
+
+    return {
+      sessions,
+      hasMore,
+      totalSessions: totalRow?.count ?? sessions.length,
+    };
+  }
+
+  /** Lazy-loaded messages for one session (newest first, keyset pagination). */
+  private listSessionMessages(
+    sessionId: string,
+    options: { limit?: number; before?: number } = {},
+  ): {
+    sessionId: string;
+    messages: Array<{
+      seqInSession: number;
+      direction: string;
+      textContent: string | null;
+      createdAt: string;
+    }>;
+    hasMore: boolean;
+  } {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+    const before = options.before && options.before > 0 ? options.before : Number.MAX_SAFE_INTEGER;
+
+    const rows = queryAll<{
+      seqInSession: number;
+      direction: string;
+      textContent: string | null;
+      createdAt: string;
+    }>(
+      `SELECT seq_in_session AS seqInSession,
               direction,
-              message_type AS messageType,
               text_content AS textContent,
-              file_refs AS fileRefs,
-              context_token AS contextToken,
               created_at AS createdAt
        FROM conversations
-       ORDER BY created_at ASC, id ASC`,
+       WHERE session_id = ? AND seq_in_session < ?
+       ORDER BY seq_in_session DESC
+       LIMIT ?`,
+      [sessionId, before, limit + 1],
     );
 
-    return { sessions, conversations };
+    const hasMore = rows.length > limit;
+    if (hasMore) rows.length = limit;
+
+    return { sessionId, messages: rows, hasMore };
   }
 
   private deleteSession(sessionId: string): boolean {
@@ -682,200 +756,195 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
   return JSON.parse(text);
 }
 
+function parsePositiveInt(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function renderAdminPage(): string {
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WeChat Claude Admin</title>
+  <title>WeChat Claude 管理面板</title>
   <style>
     :root {
-      color-scheme: light;
       --ink: #18221d;
       --muted: #657369;
       --paper: #f7f1e3;
-      --panel: rgba(255, 252, 241, 0.88);
-      --line: rgba(32, 58, 45, 0.16);
+      --panel: rgba(255,252,241,.92);
+      --line: rgba(32,58,45,.16);
       --green: #2f6b4f;
       --green-dark: #17452f;
       --gold: #c7892d;
       --red: #b94835;
-      --shadow: 0 22px 60px rgba(24, 34, 29, 0.16);
+      color-scheme: light;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      min-height: 100vh;
       color: var(--ink);
-      font-family: "Aptos", "Segoe UI", sans-serif;
+      font: 14px/1.55 "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
       background:
-        radial-gradient(circle at 12% 10%, rgba(199, 137, 45, 0.28), transparent 34rem),
-        radial-gradient(circle at 85% 5%, rgba(47, 107, 79, 0.22), transparent 30rem),
-        linear-gradient(135deg, #f6ecd6 0%, #edf3e4 55%, #f8f4e8 100%);
+        radial-gradient(1100px 500px at 85% -10%, rgba(199,137,45,.10), transparent 60%),
+        linear-gradient(180deg, #f9f4e7 0%, var(--paper) 45%, #f2ead6 100%);
+      min-height: 100vh;
     }
     header {
-      padding: 44px min(5vw, 64px) 22px;
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      gap: 24px;
+      display: flex; justify-content: space-between; align-items: center; gap: 16px;
+      max-width: 1080px; margin: 0 auto; padding: 16px 20px 8px;
     }
-    h1 {
-      margin: 0;
-      font-family: Georgia, "Times New Roman", serif;
-      font-size: clamp(34px, 5vw, 64px);
-      letter-spacing: -0.05em;
-      line-height: 0.9;
+    h1 { margin: 0; font: 700 20px/1.2 Georgia, "Times New Roman", serif; color: var(--green-dark); }
+    h1 small { font: 400 12px/1 "Aptos","Segoe UI",sans-serif; color: var(--muted); margin-left: 8px; }
+    h2 { margin: 0 0 10px; font: 700 15px/1.3 Georgia, serif; color: var(--green-dark); }
+    h3 { margin: 14px 0 6px; font: 600 12.5px/1.3 inherit; color: var(--muted); }
+    nav.tabs {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; gap: 4px;
+      max-width: 1080px; margin: 0 auto; padding: 0 20px;
+      background: rgba(247,241,227,.94); backdrop-filter: blur(8px);
+      border-bottom: 1px solid var(--line);
     }
-    .subtitle { color: var(--muted); max-width: 700px; margin-top: 14px; }
-    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
-    main {
-      display: grid;
-      grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.4fr);
-      gap: 18px;
-      padding: 0 min(5vw, 64px) 54px;
+    nav.tabs button {
+      border: 0; background: transparent; cursor: pointer;
+      padding: 10px 14px; font: 600 14px/1 inherit; color: var(--muted);
+      border-bottom: 2px solid transparent;
     }
-    section {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 28px;
-      box-shadow: var(--shadow);
-      padding: 22px;
-      backdrop-filter: blur(18px);
-      animation: rise 420ms ease both;
-    }
-    section:nth-child(2) { animation-delay: 60ms; }
-    section:nth-child(3) { animation-delay: 120ms; }
-    section:nth-child(4) { animation-delay: 180ms; }
-    h2 { margin: 0 0 16px; font-size: 18px; }
-    button, input, select, textarea {
-      font: inherit;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-    }
-    button {
-      cursor: pointer;
-      background: var(--green);
-      color: #fffdf4;
-      border: 0;
-      padding: 10px 14px;
-      font-weight: 700;
+    nav.tabs button.active { color: var(--green-dark); border-bottom-color: var(--green); }
+    main { max-width: 1080px; margin: 0 auto; padding: 14px 20px 48px; }
+    section[data-tab] { display: none; }
+    section[data-tab].active { display: grid; gap: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    button.primary, .toolbar > button, form button[type=submit] {
+      background: var(--green); color: #fff; border: 0; border-radius: 9px;
+      padding: 8px 14px; font: 600 13px/1 inherit; cursor: pointer;
     }
     button.secondary { background: #fff8e8; color: var(--green-dark); border: 1px solid var(--line); }
-    button.danger { background: var(--red); }
+    button.danger { background: var(--red); color: #fff; border: 0; }
+    button.minor { background: transparent; color: var(--green); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font: 600 12px/1.4 inherit; cursor: pointer; }
     input, select, textarea {
-      width: 100%;
-      background: rgba(255,255,255,0.72);
-      padding: 10px 12px;
-      color: var(--ink);
+      width: 100%; background: rgba(255,255,255,.75); border: 1px solid var(--line);
+      border-radius: 8px; padding: 8px 10px; color: var(--ink); font: inherit;
     }
-    textarea { min-height: 82px; resize: vertical; }
-    label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+    textarea { min-height: 74px; resize: vertical; }
+    label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
     code {
-      display: inline-block;
-      max-width: 100%;
-      overflow-wrap: anywhere;
-      color: var(--green-dark);
-      background: rgba(47, 107, 79, 0.08);
-      padding: 2px 6px;
-      border-radius: 8px;
+      display: inline-block; max-width: 100%; overflow-wrap: anywhere;
+      color: var(--green-dark); background: rgba(47,107,79,.08);
+      padding: 1px 5px; border-radius: 6px; font-size: 12px;
     }
-    .stack { display: grid; gap: 12px; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-    .metric { padding: 12px; border-radius: 18px; background: rgba(255,255,255,0.54); border: 1px solid var(--line); }
-    .metric strong { display:block; font-size: 24px; letter-spacing: -0.03em; }
+    .stack { display: grid; gap: 10px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+    .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+    .metric { padding: 10px 12px; border-radius: 12px; background: rgba(255,255,255,.6); border: 1px solid var(--line); }
+    .metric strong { display: block; font-size: 22px; letter-spacing: -0.02em; }
     .muted { color: var(--muted); }
-    .pill { display:inline-flex; gap:6px; align-items:center; padding: 4px 9px; border-radius:999px; background:rgba(47,107,79,.1); color:var(--green-dark); font-size:12px; font-weight:700; }
-    .row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 0; border-top:1px solid var(--line); }
+    .pill { display:inline-flex; gap:6px; align-items:center; padding: 2px 8px; border-radius:999px; background:rgba(47,107,79,.1); color:var(--green-dark); font-size:12px; font-weight:700; }
+    .row { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; padding:10px 0; border-top:1px solid var(--line); }
     .row:first-child { border-top:0; }
-    .row-main { min-width:0; }
-    .row-main p { margin: 4px 0 0; color: var(--muted); overflow-wrap:anywhere; }
-    .qr { width: 210px; max-width:100%; border-radius:20px; background:#fff; padding:8px; border:1px solid var(--line); }
-    .wide { grid-column: 1 / -1; }
-    .message { padding:10px 12px; border-radius:16px; background:rgba(255,255,255,.55); margin:8px 0; }
-    .message.outbound { border-left:4px solid var(--gold); }
-    .message.inbound { border-left:4px solid var(--green); }
+    .row-main { min-width:0; flex:1; }
+    .row-main p { margin: 3px 0 0; color: var(--muted); overflow-wrap:anywhere; font-size:12.5px; }
+    .messages { margin-top: 4px; }
+    .message { padding:7px 10px; border-radius:10px; background:rgba(255,255,255,.55); margin:6px 0; }
+    .message.outbound { border-left:3px solid var(--gold); }
+    .message.inbound { border-left:3px solid var(--green); }
     .tiny { font-size:12px; color:var(--muted); }
-    @keyframes rise { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: translateY(0); } }
-    @media (max-width: 900px) {
-      header { display:block; }
-      .toolbar { justify-content:flex-start; margin-top:18px; }
-      main { grid-template-columns: 1fr; }
-      .grid, .metric-grid { grid-template-columns: 1fr; }
+    .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#9db3a5; margin-right:6px; vertical-align:1px; }
+    .dot.on { background: #2e9e5b; box-shadow: 0 0 0 3px rgba(46,158,91,.18); }
+    table.plain { width:100%; border-collapse:collapse; font-size:12.5px; }
+    table.plain th { text-align:left; color:var(--muted); font-weight:600; padding:4px 8px; border-bottom:1px solid var(--line); }
+    table.plain td { padding:5px 8px; border-bottom:1px solid rgba(32,58,45,.08); overflow-wrap:anywhere; }
+    .qr { width: 190px; max-width:100%; border-radius:12px; background:#fff; padding:6px; border:1px solid var(--line); }
+    @media (max-width: 760px) {
+      header { flex-direction:column; align-items:flex-start; }
+      .grid, .grid2, .grid3 { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>WeChat Claude<br>Control Room</h1>
-      <p class="subtitle">本地管理面板：查看运行状态、登录二维码、真实路径、全部历史对话，以及创建/删除定时任务。</p>
-    </div>
+    <h1>WeChat Claude <small>管理面板</small></h1>
     <div class="toolbar">
-      <button id="refresh">刷新全部</button>
+      <button id="refresh">刷新当前页</button>
       <button id="refreshQr" class="secondary">刷新二维码</button>
       <button id="pollQr" class="secondary">轮询扫码状态</button>
     </div>
   </header>
 
+  <nav class="tabs">
+    <button data-tab="overview" class="active">概览</button>
+    <button data-tab="conversations">对话</button>
+    <button data-tab="tasks">任务</button>
+    <button data-tab="settings">设置</button>
+  </nav>
+
   <main>
-    <section>
-      <h2>程序运行状态</h2>
-      <div id="status" class="stack muted">加载中...</div>
+    <section data-tab="overview" class="active">
+      <div class="card"><div class="grid3" id="metrics" class="muted">加载中…</div></div>
+      <div class="card">
+        <h2>AI 后端</h2>
+        <div id="agent" class="stack muted">加载中…</div>
+      </div>
+      <div class="grid">
+        <div class="card"><h2>登录二维码</h2><div id="auth" class="stack muted">加载中…</div></div>
+        <div class="card"><h2>运行详情</h2><div id="status" class="stack muted">加载中…</div></div>
+      </div>
     </section>
 
-    <section>
-      <h2>登录二维码</h2>
-      <div id="auth" class="stack muted">加载中...</div>
-    </section>
-
-    <section class="wide">
-      <h2>历史对话（全部）</h2>
-      <div id="conversations" class="stack muted">加载中...</div>
-    </section>
-
-    <section class="wide">
-      <h2>定时任务</h2>
-      <form id="taskForm" class="stack">
-        <div class="grid">
-          <label>用户 ID<input name="userId" placeholder="from_user_id" required></label>
-          <label>context_token<input name="contextToken" placeholder="微信 context_token" required></label>
-          <label>标题<input name="title" placeholder="开会提醒" required></label>
-          <label>模式<select name="mode"><option value="send_text">直接发微信文本</option><option value="agent_prompt">触发 AI 后发送结果</option></select></label>
-          <label>计划类型<select name="scheduleType"><option value="once">一次性</option><option value="daily">每天</option><option value="weekly">每周</option></select></label>
-          <label>一次性时间<input name="runAt" type="datetime-local"></label>
-          <label>每周星期<select name="weekday"><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option></select></label>
-          <label>每天/每周时间<input name="timeOfDay" type="time" value="09:00"></label>
+    <section data-tab="conversations">
+      <div class="card">
+        <div class="toolbar" style="justify-content:space-between">
+          <input id="sessionSearch" placeholder="过滤：用户 / 会话ID / 摘要" style="max-width:380px">
+          <span class="tiny" id="sessionCount"></span>
         </div>
-        <label>文本 / Agent 提示词<textarea name="payloadText" placeholder="你要去开会 / 帮我找今天的新闻" required></textarea></label>
-        <button type="submit">创建定时任务</button>
-      </form>
-      <div id="tasks" class="stack muted" style="margin-top:18px;">加载中...</div>
+        <div id="sessions" class="stack muted" style="margin-top:10px">加载中…</div>
+      </div>
     </section>
 
-    <section class="wide">
-      <h2>模型、图片与消息合并设置</h2>
-      <form id="settingsForm" class="stack">
-        <div class="grid">
-          <label>图片模式<select name="imageMode"><option value="direct">直连：图片直接进对话（对话模型=视觉模型）</option><option value="split">分离：图片先转文字，对话用对话模型</option></select></label>
-          <label>视觉模型<input name="visionModel" placeholder="deepseek-v4-flash-vision-exp"></label>
-          <label>对话模型（分离模式使用）<input name="conversationModel" placeholder="deepseek-v4-flash"></label>
-        </div>
-        <div class="grid">
-          <label>文本合并窗口（毫秒）<input name="debounceTextMs" type="number" min="200" max="600000" step="100" placeholder="3000"></label>
-          <label>媒体合并窗口（毫秒）<input name="debounceMediaMs" type="number" min="200" max="600000" step="100" placeholder="5000"></label>
-          <label>最大累计上限（毫秒）<input name="debounceMaxMs" type="number" min="1000" max="1800000" step="500" placeholder="15000"></label>
-        </div>
-        <div class="tiny">窗口：消息发出后等待合并的时间，来新消息会重新计时；上限：一批消息累计多久后强制发送。对下一条消息生效，无需重启。</div>
-        <button type="submit">保存设置</button>
-      </form>
+    <section data-tab="tasks">
+      <div class="card">
+        <h2>创建定时任务</h2>
+        <form id="taskForm" class="stack">
+          <div class="grid2">
+            <label>用户 ID<input name="userId" placeholder="from_user_id" required></label>
+            <label>context_token<input name="contextToken" placeholder="微信 context_token" required></label>
+            <label>标题<input name="title" placeholder="开会提醒" required></label>
+            <label>模式<select name="mode"><option value="send_text">直接发微信文本</option><option value="agent_prompt">触发 AI 后发送结果</option></select></label>
+            <label>计划类型<select name="scheduleType"><option value="once">一次性</option><option value="daily">每天</option><option value="weekly">每周</option></select></label>
+            <label>一次性时间<input name="runAt" type="datetime-local"></label>
+            <label>每周星期<select name="weekday"><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option></select></label>
+            <label>每天/每周时间<input name="timeOfDay" type="time" value="09:00"></label>
+          </div>
+          <label>文本 / Agent 提示词<textarea name="payloadText" placeholder="你要去开会 / 帮我找今天的新闻" required></textarea></label>
+          <button type="submit">创建定时任务</button>
+        </form>
+      </div>
+      <div class="card"><h2>任务列表</h2><div id="tasks" class="stack muted">加载中…</div></div>
     </section>
 
-    <section class="wide">
-      <h2>报文记录（按发送者）</h2>
-      <div id="quoteFiles" class="stack muted">加载中...</div>
+    <section data-tab="settings">
+      <div class="card">
+        <h2>模型、图片与消息合并</h2>
+        <form id="settingsForm" class="stack">
+          <div class="grid2">
+            <label>图片模式<select name="imageMode"><option value="direct">直连：图片直接进对话（对话模型=视觉模型）</option><option value="split">分离：图片先转文字，对话用对话模型</option></select></label>
+            <label>视觉模型<input name="visionModel" placeholder="deepseek-v4-flash-vision-exp"></label>
+            <label>对话模型（分离模式使用）<input name="conversationModel" placeholder="deepseek-v4-flash"></label>
+          </div>
+          <div class="grid2">
+            <label>文本合并窗口（毫秒）<input name="debounceTextMs" type="number" min="200" max="600000" step="100" placeholder="3000"></label>
+            <label>媒体合并窗口（毫秒）<input name="debounceMediaMs" type="number" min="200" max="600000" step="100" placeholder="5000"></label>
+            <label>最大累计上限（毫秒）<input name="debounceMaxMs" type="number" min="1000" max="1800000" step="500" placeholder="15000"></label>
+          </div>
+          <div class="tiny">窗口：消息发出后等待合并的时间，来新消息会重新计时；上限：一批消息累计多久后强制发送。对下一条消息生效，无需重启。</div>
+          <button type="submit">保存设置</button>
+        </form>
+      </div>
+      <div class="card"><h2>报文记录（按发送者）</h2><div id="quoteFiles" class="stack muted">加载中…</div></div>
     </section>
   </main>
 
@@ -893,60 +962,130 @@ function renderAdminPage(): string {
     const safe = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch]));
     const short = (value) => {
       const text = String(value ?? "");
-      return text.length > 120 ? text.slice(0, 117) + "..." : text;
+      return text.length > 160 ? text.slice(0, 157) + "..." : text;
     };
+    const clock = (iso) => safe(String(iso ?? "").replace("T"," ").slice(5,19));
+
+    let activeTab = "overview";
+    const loadedTabs = new Set();
+    const state = { sessions: [], open: new Map() };
+
+    document.querySelectorAll("nav.tabs button").forEach((btn) => btn.addEventListener("click", () => {
+      activeTab = btn.dataset.tab;
+      document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("active", b === btn));
+      document.querySelectorAll("section[data-tab]").forEach((s) => s.classList.toggle("active", s.dataset.tab === activeTab));
+      loadTab(activeTab, false).catch(alert);
+    }));
+
+    function loadTab(tab, force) {
+      if (!force && loadedTabs.has(tab)) return Promise.resolve();
+      loadedTabs.add(tab);
+      const jobs = {
+        overview: () => Promise.all([loadStatus(), loadAgent(), loadAuth()]),
+        conversations: () => loadSessions(),
+        tasks: () => loadTasks(),
+        settings: () => Promise.all([loadSettings(), loadQuoteFiles()]),
+      };
+      return (jobs[tab] || (() => {}))();
+    }
 
     async function loadStatus() {
       const { status } = await api("/api/status");
+      $("metrics").innerHTML = \`
+        <div class="metric"><span class="tiny">会话</span><strong>\${status.counts.sessions}</strong></div>
+        <div class="metric"><span class="tiny">消息</span><strong>\${status.counts.conversations}</strong></div>
+        <div class="metric"><span class="tiny">任务</span><strong>\${status.counts.activeTasks}</strong></div>\`;
       $("status").innerHTML = \`
-        <div class="metric-grid">
-          <div class="metric"><span class="tiny">会话</span><strong>\${status.counts.sessions}</strong></div>
-          <div class="metric"><span class="tiny">消息</span><strong>\${status.counts.conversations}</strong></div>
-          <div class="metric"><span class="tiny">任务</span><strong>\${status.counts.activeTasks}</strong></div>
-        </div>
-        <div><span class="pill">运行中</span> 本地时间：<strong>\${safe(status.localTime)}</strong> <span class="muted">(\${safe(status.timezone)})</span></div>
-        <div>启动时间：<code>\${safe(status.startedAt)}</code></div>
-        <div>PID：<code>\${safe(status.pid)}</code></div>
-        <div>数据目录：<code>\${safe(status.paths.dataDir)}</code></div>
-        <div>数据库：<code>\${safe(status.paths.dbPath)}</code></div>
-        <div>工作区根目录：<code>\${safe(status.paths.workspaceBase)}</code></div>
-      \`;
+        <div><span class="pill">运行中</span> <strong>\${safe(status.localTime)}</strong> <span class="muted">(\${safe(status.timezone)})</span></div>
+        <div class="tiny">启动：\${clock(status.startedAt)} · PID <code>\${safe(status.pid)}</code></div>
+        <div class="tiny">数据目录：<code>\${safe(status.paths.dataDir)}</code></div>
+        <div class="tiny">数据库：<code>\${safe(status.paths.dbPath)}</code></div>
+        <div class="tiny">工作区：<code>\${safe(status.paths.workspaceBase)}</code></div>\`;
+    }
+
+    async function loadAgent() {
+      const { agent } = await api("/api/agent-status");
+      const m = agent.manager;
+      const cfg = agent.config;
+      let html = \`
+        <div>图片模式 <strong>\${safe(cfg.imageMode)}</strong> · 视觉 <code>\${safe(cfg.visionModel)}</code> · 对话 <code>\${safe(cfg.conversationModel)}</code></div>
+        <div class="tiny">端点 <code>\${safe(agent.baseUrlHost)}</code> · 并发 \${safe(m ? m.maxConcurrent : "-")} · 忙碌 \${safe(m ? m.busyCount : 0)} · 排队 \${safe(m ? m.queueDepth : 0)}</div>\`;
+      if (m && m.sessions.length) {
+        html += "<h3>会话</h3><table class='plain'><tr><th>会话</th><th>模型</th><th>状态</th><th>最近查询</th><th>轮次</th></tr>"
+          + m.sessions.map((s) => \`<tr><td><code>\${safe(s.sessionId.slice(0, 8))}</code></td><td>\${safe(s.model || "-")}</td><td><span class="dot \${s.isProcessing ? "on" : ""}"></span>\${s.isProcessing ? "处理中" : "空闲"}</td><td>\${clock(s.lastQueryAt) || "-"}</td><td>\${safe(s.lastTurnCount ?? "-")}</td></tr>\`).join("")
+          + "</table>";
+      }
+      if (m && m.recent.length) {
+        html += "<h3>最近请求</h3><table class='plain'><tr><th>时间</th><th>耗时</th><th>会话</th><th>轮次</th><th>结果</th></tr>"
+          + m.recent.slice(0, 10).map((q) => \`<tr><td>\${clock(q.startedAt)}</td><td>\${(q.durationMs / 1000).toFixed(1)}s</td><td><code>\${safe(q.sessionId.slice(0, 8))}</code></td><td>\${safe(q.turnCount)}</td><td>\${q.ok ? "成功" : "<span style='color:#b94835'>" + safe(q.error || "失败") + "</span>"}</td></tr>\`).join("")
+          + "</table>";
+      }
+      if (!m) html += "<div class='tiny'>AI 管理器尚未初始化。</div>";
+      $("agent").innerHTML = html;
+      $("agent").classList.remove("muted");
     }
 
     async function loadAuth() {
       const { auth } = await api("/api/auth");
       $("auth").innerHTML = \`
         <div>Token：\${auth.tokenPresent ? '<span class="pill">已存在</span> <code>' + safe(auth.tokenPreview) + '</code>' : '<span class="pill">未配置</span>'}</div>
-        <div>Token 文件：<code>\${safe(auth.tokenFile)}</code></div>
-        <div>二维码文件：<code>\${safe(auth.qrImagePath)}</code></div>
-        \${auth.qrImageDataUrl ? '<img class="qr" src="' + safe(auth.qrImageDataUrl) + '" alt="WeChat QR">' : '<div class="muted">暂无二维码，点击“刷新二维码”。</div>'}
-        \${auth.lastQrCode ? '<div class="tiny">当前 qrcode：<code>' + safe(auth.lastQrCode) + '</code></div>' : ''}
-      \`;
+        \${auth.qrImageDataUrl ? '<img class="qr" src="' + safe(auth.qrImageDataUrl) + '" alt="WeChat QR">' : '<div class="tiny">暂无二维码，点击"刷新二维码"。</div>'}
+        \${auth.lastQrCode ? '<div class="tiny">当前 qrcode：<code>' + safe(auth.lastQrCode) + '</code></div>' : ''}\`;
+      $("auth").classList.remove("muted");
     }
 
-    async function loadConversations() {
-      const { sessions, conversations } = await api("/api/conversations");
-      const bySession = new Map();
-      conversations.forEach((msg) => {
-        if (!bySession.has(msg.sessionId)) bySession.set(msg.sessionId, []);
-        bySession.get(msg.sessionId).push(msg);
-      });
-      $("conversations").innerHTML = sessions.length ? sessions.map((s) => {
-        const msgs = bySession.get(s.id) || [];
+    async function loadSessions() {
+      const data = await api("/api/conversations");
+      state.sessions = data.sessions;
+      $("sessionCount").textContent = "最近 " + data.sessions.length + " / 共 " + data.totalSessions + " 个会话";
+      renderSessions();
+    }
+
+    function msgHtml(m) {
+      return \`<div class="message \${safe(m.direction)}"><span class="tiny">#\${safe(m.seqInSession)} \${safe(m.direction === "outbound" ? "AI" : "用户")} · \${clock(m.createdAt)}</span><br>\${safe(short(m.textContent || ""))}</div>\`;
+    }
+
+    function renderSessions() {
+      const q = $("sessionSearch").value.trim().toLowerCase();
+      const list = state.sessions.filter((s) =>
+        !q || (s.fromUserId + " " + s.id + " " + (s.summary || "")).toLowerCase().includes(q));
+      $("sessions").innerHTML = list.length ? list.map((s) => {
+        const open = state.open.get(s.id);
+        const body = open
+          ? open.messages.slice().reverse().map(msgHtml).join("")
+            + (open.hasMore ? \`<div style="margin-top:6px"><button class="minor" data-more="\${safe(s.id)}">加载更早消息</button></div>\` : "")
+          : \`<span class="tiny">点击"展开"查看该会话的消息</span>\`;
         return \`
           <div class="row">
             <div class="row-main">
-              <strong>\${safe(s.fromUserId)}</strong> <span class="pill">\${safe(s.status)}</span>
-              <p>ID：<code>\${safe(s.id)}</code></p>
-              <p>实际工作目录：<code>\${safe(s.cwd)}</code></p>
-              <p>context_token：<code>\${safe(s.contextToken || "")}</code></p>
-              <p>最后活动：\${safe(s.lastActiveAt)}，消息数：\${safe(s.messageCount)}</p>
-              <div>\${msgs.map((m) => \`<div class="message \${safe(m.direction)}"><span class="tiny">#\${safe(m.seqInSession)} \${safe(m.direction)} \${safe(m.createdAt)}</span><br>\${safe(short(m.textContent || m.fileRefs || ""))}</div>\`).join("")}</div>
+              <strong>\${safe(s.fromUserId.slice(0, 22))}</strong> <span class="pill">\${safe(s.status)}</span>
+              <span class="tiny">\${safe(s.messageCount)} 条 · \${clock(s.lastActiveAt)}\${s.summary ? " · " + safe(s.summary.slice(0, 30)) : ""}</span>
+              <div class="messages">\${body}</div>
             </div>
-            <button class="danger" data-delete-session="\${safe(s.id)}">删除</button>
-          </div>
-        \`;
-      }).join("") : "暂无历史对话";
+            <div class="toolbar">
+              <button class="secondary" data-toggle="\${safe(s.id)}">\${open ? "收起" : "展开"}</button>
+              <button class="danger" data-delete-session="\${safe(s.id)}">删除</button>
+            </div>
+          </div>\`;
+      }).join("") : "没有匹配的会话";
+      $("sessions").classList.remove("muted");
+    }
+
+    async function toggleSession(id) {
+      if (state.open.has(id)) { state.open.delete(id); renderSessions(); return; }
+      const data = await api("/api/sessions/" + encodeURIComponent(id) + "/messages?limit=50");
+      state.open.set(id, { messages: data.messages, hasMore: data.hasMore });
+      renderSessions();
+    }
+
+    async function loadMoreMessages(id) {
+      const open = state.open.get(id);
+      if (!open || !open.messages.length) return;
+      const oldest = open.messages[open.messages.length - 1].seqInSession;
+      const data = await api("/api/sessions/" + encodeURIComponent(id) + "/messages?limit=50&before=" + oldest);
+      open.messages.push(...data.messages);
+      open.hasMore = data.hasMore;
+      renderSessions();
     }
 
     async function loadTasks() {
@@ -955,16 +1094,14 @@ function renderAdminPage(): string {
         <div class="row">
           <div class="row-main">
             <strong>\${safe(t.title)}</strong> <span class="pill">\${safe(t.status)}</span> <span class="pill">\${safe(t.mode)}</span>
-            <p>ID：<code>\${safe(t.id)}</code></p>
-            <p>用户：<code>\${safe(t.userId)}</code> context：<code>\${safe(t.contextToken)}</code></p>
             <p>计划：\${t.scheduleType === "once" ? safe(t.runAt) : t.scheduleType === "daily" ? "每天 " + safe(t.timeOfDay) : "每周 " + safe(t.weekday) + " " + safe(t.timeOfDay)}；下次：<code>\${safe(t.nextRunAt)}</code></p>
             <p>\${safe(short(t.payloadText))}</p>
           </div>
           <button class="danger" data-delete-task="\${safe(t.id)}">删除</button>
-        </div>
-      \`).join("") : "暂无定时任务";
-      const draftHtml = drafts.length ? \`<h3>待确认草稿</h3>\${drafts.map((d) => \`<div class="message"><strong>\${safe(d.title)}</strong><br><span class="tiny">\${safe(d.userId)}，过期：\${safe(d.expiresAt)}</span></div>\`).join("")}\` : "";
+        </div>\`).join("") : "暂无定时任务";
+      const draftHtml = drafts.length ? "<h3>待确认草稿</h3>" + drafts.map((d) => \`<div class="message"><strong>\${safe(d.title)}</strong><br><span class="tiny">\${safe(d.userId)}，过期：\${safe(d.expiresAt)}</span></div>\`).join("") : "";
       $("tasks").innerHTML = taskHtml + draftHtml;
+      $("tasks").classList.remove("muted");
     }
 
     async function loadSettings() {
@@ -987,24 +1124,21 @@ function renderAdminPage(): string {
             <p>大小：\${(f.sizeBytes / 1024).toFixed(1)} KB</p>
           </div>
           <button class="danger" data-delete-quote="\${safe(f.user)}">删除</button>
-        </div>
-      \`).join("") : "暂无报文记录";
+        </div>\`).join("") : "暂无报文记录";
+      $("quoteFiles").classList.remove("muted");
     }
 
-    async function refreshAll() {
-      await Promise.all([loadStatus(), loadAuth(), loadConversations(), loadTasks(), loadSettings(), loadQuoteFiles()]);
-    }
-
-    $("refresh").addEventListener("click", () => refreshAll().catch(alert));
+    $("refresh").addEventListener("click", () => loadTab(activeTab, true).catch(alert));
     $("refreshQr").addEventListener("click", async () => {
       await api("/api/auth/qr", { method: "POST", body: "{}" });
       await loadAuth();
     });
     $("pollQr").addEventListener("click", async () => {
       const result = await api("/api/auth/qr-status");
-      alert(result.tokenSaved ? "扫码确认成功，token 已保存；请重启 bridge 让发送链路使用新 token。" : "当前状态：" + result.qrStatus);
+      alert(result.tokenSaved ? "扫码确认成功，token 已保存；请重启服务让发送链路使用新 token。" : "当前状态：" + result.qrStatus);
       await loadAuth();
     });
+    $("sessionSearch").addEventListener("input", renderSessions);
     $("taskForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
@@ -1044,23 +1178,37 @@ function renderAdminPage(): string {
       alert("设置已保存，对下一条消息生效。");
     });
     document.body.addEventListener("click", async (event) => {
-      const sessionId = event.target?.dataset?.deleteSession;
-      const taskId = event.target?.dataset?.deleteTask;
-      const quoteUser = event.target?.dataset?.deleteQuote;
+      const el = event.target;
+      const toggleId = el?.dataset?.toggle;
+      const moreId = el?.dataset?.more;
+      const sessionId = el?.dataset?.deleteSession;
+      const taskId = el?.dataset?.deleteTask;
+      const quoteUser = el?.dataset?.deleteQuote;
+      if (toggleId) { await toggleSession(toggleId).catch(alert); return; }
+      if (moreId) { await loadMoreMessages(moreId).catch(alert); return; }
       if (sessionId && confirm("删除这个会话及其工作目录？")) {
         await api("/api/sessions/" + encodeURIComponent(sessionId), { method: "DELETE" });
-        await refreshAll();
+        state.open.delete(sessionId);
+        await loadSessions().catch(alert);
       }
       if (taskId && confirm("删除这个定时任务？")) {
         await api("/api/tasks/" + encodeURIComponent(taskId), { method: "DELETE" });
-        await refreshAll();
+        await loadTasks().catch(alert);
       }
       if (quoteUser && confirm("删除该发送者的报文记录？")) {
         await api("/api/quote-files/" + encodeURIComponent(quoteUser), { method: "DELETE" });
-        await loadQuoteFiles();
+        await loadQuoteFiles().catch(alert);
       }
     });
-    refreshAll().catch((err) => {
+
+    // 概览页的 AI 状态局部自动刷新
+    setInterval(() => {
+      if (activeTab === "overview" && document.visibilityState === "visible") {
+        loadAgent().catch(() => undefined);
+      }
+    }, 5000);
+
+    loadTab("overview").catch((err) => {
       document.body.insertAdjacentHTML("afterbegin", '<pre style="margin:20px;color:#b94835">' + safe(err.message) + '</pre>');
     });
   </script>

@@ -22,6 +22,7 @@ export class ClaudeSession {
   private abortController: AbortController;
   private isProcessing = false;
   private lastResult: ClaudeQueryResult | null = null;
+  private lastQueryAtIso: string | null = null;
   private readonly model?: string;
   private readonly maxTurns?: number;
   private readonly permissionMode: ClaudeSessionOptions["permissionMode"];
@@ -72,6 +73,7 @@ export class ClaudeSession {
     let resultError: string | null = null;
     let turnCount = 0;
     this.isProcessing = true;
+    this.lastQueryAtIso = new Date().toISOString();
 
     try {
       const queryArgs = {
@@ -140,6 +142,11 @@ export class ClaudeSession {
   /** The model this session was created with (used to detect config changes). */
   getModel(): string | undefined {
     return this.model;
+  }
+
+  /** ISO timestamp of the most recent query start (for the admin panel). */
+  getLastQueryAt(): string | null {
+    return this.lastQueryAtIso;
   }
 
   getIsProcessing(): boolean {

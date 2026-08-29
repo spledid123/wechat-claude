@@ -13,11 +13,36 @@ import {
   buildUserBlocksMessage,
 } from "../prompt-builder.js";
 
+export interface AgentQueryRecord {
+  startedAt: string;
+  durationMs: number;
+  sessionId: string;
+  model: string | undefined;
+  turnCount: number;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface AgentStatusSnapshot {
+  maxConcurrent: number;
+  busyCount: number;
+  queueDepth: number;
+  sessions: Array<{
+    sessionId: string;
+    model: string | undefined;
+    isProcessing: boolean;
+    lastQueryAt: string | null;
+    lastTurnCount: number | null;
+  }>;
+  recent: AgentQueryRecord[];
+}
+
 export class ClaudeManager {
   private sessions = new Map<string, ClaudeSession>();
   private semaphore: number;
   private activeCount = 0;
   private queue: Array<() => void> = [];
+  private readonly recentQueries: AgentQueryRecord[] = [];
 
   constructor(maxConcurrent = 1) {
     this.semaphore = maxConcurrent;
@@ -71,11 +96,54 @@ export class ClaudeManager {
       ? buildUserBlocksMessage(ctx)
       : buildUserMessage(ctx);
 
+    const startedAt = new Date();
     await this.acquire();
     try {
-      return await session.querySimple(userMessage, systemAppend, mcpServers);
+      const result = await session.querySimple(userMessage, systemAppend, mcpServers);
+      this.recordQuery(startedAt, session, result.turnCount, null);
+      return result;
+    } catch (err) {
+      this.recordQuery(startedAt, session, null, (err as Error).message);
+      throw err;
     } finally {
       this.release();
+    }
+  }
+
+  /** Live status for the admin panel (safe to call at any time). */
+  snapshot(): AgentStatusSnapshot {
+    return {
+      maxConcurrent: this.semaphore,
+      busyCount: this.activeCount,
+      queueDepth: this.queue.length,
+      sessions: Array.from(this.sessions.values()).map((session) => ({
+        sessionId: session.sessionId,
+        model: session.getModel(),
+        isProcessing: session.getIsProcessing(),
+        lastQueryAt: session.getLastQueryAt(),
+        lastTurnCount: session.getLastResult()?.turnCount ?? null,
+      })),
+      recent: [...this.recentQueries],
+    };
+  }
+
+  private recordQuery(
+    startedAt: Date,
+    session: ClaudeSession,
+    turnCount: number | null,
+    error: string | null,
+  ): void {
+    this.recentQueries.unshift({
+      startedAt: startedAt.toISOString(),
+      durationMs: Date.now() - startedAt.getTime(),
+      sessionId: session.sessionId,
+      model: session.getModel(),
+      turnCount: turnCount ?? 0,
+      ok: error === null,
+      error: error ? error.slice(0, 200) : null,
+    });
+    if (this.recentQueries.length > 20) {
+      this.recentQueries.length = 20;
     }
   }
 

@@ -182,6 +182,7 @@ export class WechatClaudeService {
         workspaceBase: this.paths.workspaceBase,
         tokenFile: this.paths.tokenFile,
         scheduler: this.scheduler,
+        agentStatus: () => this.claude?.snapshot() ?? null,
       });
       await this.adminServer.listen(this.adminPort);
       this.logger.info(`Admin panel: ${this.adminServer.url}/`);

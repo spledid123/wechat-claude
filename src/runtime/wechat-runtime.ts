@@ -29,8 +29,10 @@ export function createWechatSendText(botToken: string): SendTextLike {
 export function createWechatSendAttachment(botToken: string): SendAttachmentFunc {
   return async ({ toUserId, contextToken, filePath, kind }) => {
     if (kind === "image") {
-      await sendImage({ toUserId, contextToken, filePath }, botToken);
-      return;
+      // Surface the msg_id so the bridge can index outbound images for
+      // later quote lookups.
+      const sent = await sendImage({ toUserId, contextToken, filePath }, botToken);
+      return { msgId: sent.msgId };
     }
 
     await sendFile({ toUserId, contextToken, filePath }, botToken);

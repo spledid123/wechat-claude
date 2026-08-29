@@ -110,6 +110,18 @@ export function buildSystemPromptAppend(ctx: PromptContext): string {
     );
   }
 
+  // 6b. How to treat quoted WeChat messages
+  blocks.push(
+    [
+      "QUOTED MESSAGES:",
+      'When a user message starts with "[引用内容: ...]", that text IS the content',
+      "of the message the user quoted — use it directly. Do NOT search the",
+      "filesystem for the quoted item.",
+      "When a message notes the quoted content could not be parsed, the quote is",
+      "unavailable — ask the user to re-send the original instead of hunting for files.",
+    ].join("\n"),
+  );
+
   // 7. Teach the model how to create multi-bubble WeChat replies.
   blocks.push(buildScheduledTaskInstruction());
 

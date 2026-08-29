@@ -46,7 +46,7 @@ export type SendAttachmentFunc = (params: {
   contextToken: string;
   filePath: string;
   kind: "image" | "file";
-}) => Promise<void>;
+}) => Promise<{ msgId?: string } | void>;
 
 export interface BridgeMessageInput {
   msg: ParsedMessage;
@@ -265,7 +265,7 @@ export class Bridge {
       });
     }
 
-    await this.deliverOutputFiles(session.cwd, first.fromUserId, first.contextToken);
+    await this.deliverOutputFiles(session, first.fromUserId, first.contextToken);
 
     // Fire-and-forget: in direct mode the inline image lives only in this
     // API call. Extract its content afterwards so the quote index and the
@@ -523,6 +523,11 @@ export class Bridge {
     if (summary && !PLACEHOLDER_TEXTS.has(summary)) {
       return { text: summary };
     }
+    // We know WHAT was quoted (we have its id) but cannot recover its
+    // content — say so instead of silently dropping the reference.
+    if (quoted.msgId) {
+      return { unresolvedLabel: "消息" };
+    }
     return {};
   }
 
@@ -611,7 +616,7 @@ export class Bridge {
   }
 
   private async deliverOutputFiles(
-    sessionCwd: string,
+    session: { id: string; userId: number; cwd: string },
     toUserId: string,
     contextToken: string,
   ): Promise<void> {
@@ -619,20 +624,48 @@ export class Bridge {
       return;
     }
 
-    const pendingFiles = collectPendingWechatFiles(sessionCwd);
+    const pendingFiles = collectPendingWechatFiles(session.cwd);
     if (pendingFiles.length === 0) {
       return;
     }
 
     for (const file of pendingFiles) {
-      await this.sendAttachment({
+      const sent = await this.sendAttachment({
         toUserId,
         contextToken,
         filePath: file.filePath,
         kind: file.kind,
       });
+
+      // Index outbound images so the user can quote them back later. The
+      // file is still on disk in the workspace; extraction is fire-and-forget
+      // so it never delays the send loop.
+      const msgId = sent?.msgId;
+      if (file.kind === "image" && msgId) {
+        void extractImageFileWithVision(file.filePath, file.fileName, {
+          model: this.getRuntimeConfig().visionModel,
+        })
+          .then((result) => {
+            if (!result.ok) {
+              getRootLogger().warn(`outbound image indexing failed: ${result.error}`);
+              return;
+            }
+            this.cm.saveMessageText({
+              msgId,
+              userId: session.userId,
+              sessionId: session.id,
+              fromUserId: toUserId,
+              itemType: "image",
+              fileName: file.fileName,
+              textContent: result.text,
+            });
+          })
+          .catch((err) => {
+            getRootLogger().warn(`outbound image indexing error: ${String(err)}`);
+          });
+      }
     }
 
-    markWechatFilesSent(sessionCwd, pendingFiles);
+    markWechatFilesSent(session.cwd, pendingFiles);
   }
 }
