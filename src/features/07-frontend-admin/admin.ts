@@ -965,6 +965,8 @@ function renderAdminPage(): string {
       return text.length > 160 ? text.slice(0, 157) + "..." : text;
     };
     const clock = (iso) => safe(String(iso ?? "").replace("T"," ").slice(5,19));
+    const fmtNum = (n) => (typeof n === "number" && n > 0) ? (n >= 10000 ? (n / 1000).toFixed(1) + "k" : String(n)) : "-";
+    const fmtTokens = (inp, out) => "入 " + fmtNum(inp) + " / 出 " + fmtNum(out);
 
     let activeTab = "overview";
     const loadedTabs = new Set();
@@ -1011,13 +1013,13 @@ function renderAdminPage(): string {
         <div>图片模式 <strong>\${safe(cfg.imageMode)}</strong> · 视觉 <code>\${safe(cfg.visionModel)}</code> · 对话 <code>\${safe(cfg.conversationModel)}</code></div>
         <div class="tiny">端点 <code>\${safe(agent.baseUrlHost)}</code> · 并发 \${safe(m ? m.maxConcurrent : "-")} · 忙碌 \${safe(m ? m.busyCount : 0)} · 排队 \${safe(m ? m.queueDepth : 0)}</div>\`;
       if (m && m.sessions.length) {
-        html += "<h3>会话</h3><table class='plain'><tr><th>会话</th><th>模型</th><th>状态</th><th>最近查询</th><th>轮次</th></tr>"
-          + m.sessions.map((s) => \`<tr><td><code>\${safe(s.sessionId.slice(0, 8))}</code></td><td>\${safe(s.model || "-")}</td><td><span class="dot \${s.isProcessing ? "on" : ""}"></span>\${s.isProcessing ? "处理中" : "空闲"}</td><td>\${clock(s.lastQueryAt) || "-"}</td><td>\${safe(s.lastTurnCount ?? "-")}</td></tr>\`).join("")
+        html += "<h3>会话</h3><table class='plain'><tr><th>会话</th><th>模型</th><th>状态</th><th>最近查询</th><th>轮次</th><th>上次 tokens</th></tr>"
+          + m.sessions.map((s) => \`<tr><td><code>\${safe(s.sessionId.slice(0, 8))}</code></td><td>\${safe(s.model || "-")}</td><td><span class="dot \${s.isProcessing ? "on" : ""}"></span>\${s.isProcessing ? "处理中" : "空闲"}</td><td>\${clock(s.lastQueryAt) || "-"}</td><td>\${safe(s.lastTurnCount ?? "-")}</td><td>\${s.lastUsage ? fmtTokens(s.lastUsage.inputTokens, s.lastUsage.outputTokens) : "-"}</td></tr>\`).join("")
           + "</table>";
       }
       if (m && m.recent.length) {
-        html += "<h3>最近请求</h3><table class='plain'><tr><th>时间</th><th>耗时</th><th>会话</th><th>轮次</th><th>结果</th></tr>"
-          + m.recent.slice(0, 10).map((q) => \`<tr><td>\${clock(q.startedAt)}</td><td>\${(q.durationMs / 1000).toFixed(1)}s</td><td><code>\${safe(q.sessionId.slice(0, 8))}</code></td><td>\${safe(q.turnCount)}</td><td>\${q.ok ? "成功" : "<span style='color:#b94835'>" + safe(q.error || "失败") + "</span>"}</td></tr>\`).join("")
+        html += "<h3>最近请求</h3><table class='plain'><tr><th>时间</th><th>耗时</th><th>会话</th><th>轮次</th><th>输入</th><th>输出</th><th>结果</th></tr>"
+          + m.recent.slice(0, 10).map((q) => \`<tr><td>\${clock(q.startedAt)}</td><td>\${(q.durationMs / 1000).toFixed(1)}s</td><td><code>\${safe(q.sessionId.slice(0, 8))}</code></td><td>\${safe(q.turnCount)}</td><td>\${fmtNum(q.inputTokens)}</td><td>\${fmtNum(q.outputTokens)}</td><td>\${q.ok ? "成功" : "<span style='color:#b94835'>" + safe(q.error || "失败") + "</span>"}</td></tr>\`).join("")
           + "</table>";
       }
       if (!m) html += "<div class='tiny'>AI 管理器尚未初始化。</div>";

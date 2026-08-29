@@ -21,6 +21,9 @@ export interface AgentQueryRecord {
   turnCount: number;
   ok: boolean;
   error: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
 }
 
 export interface AgentStatusSnapshot {
@@ -33,6 +36,7 @@ export interface AgentStatusSnapshot {
     isProcessing: boolean;
     lastQueryAt: string | null;
     lastTurnCount: number | null;
+    lastUsage: { inputTokens: number; outputTokens: number } | null;
   }>;
   recent: AgentQueryRecord[];
 }
@@ -101,10 +105,10 @@ export class ClaudeManager {
     await this.acquire();
     try {
       const result = await session.querySimple(userMessage, systemAppend, mcpServers);
-      this.recordQuery(startedAt, session, result.turnCount, null);
+      this.recordQuery(startedAt, session, result.turnCount, null, result.usage);
       return result;
     } catch (err) {
-      this.recordQuery(startedAt, session, null, (err as Error).message);
+      this.recordQuery(startedAt, session, null, (err as Error).message, undefined);
       throw err;
     } finally {
       this.release();
@@ -118,13 +122,19 @@ export class ClaudeManager {
       maxConcurrent: this.semaphore,
       busyCount: this.activeCount,
       queueDepth: this.queue.length,
-      sessions: Array.from(this.sessions.values()).map((session) => ({
-        sessionId: session.sessionId,
-        model: session.getModel(),
-        isProcessing: session.getIsProcessing(),
-        lastQueryAt: session.getLastQueryAt(),
-        lastTurnCount: session.getLastResult()?.turnCount ?? null,
-      })),
+      sessions: Array.from(this.sessions.values()).map((session) => {
+        const last = session.getLastResult();
+        return {
+          sessionId: session.sessionId,
+          model: session.getModel(),
+          isProcessing: session.getIsProcessing(),
+          lastQueryAt: session.getLastQueryAt(),
+          lastTurnCount: last?.turnCount ?? null,
+          lastUsage: last?.usage
+            ? { inputTokens: last.usage.inputTokens, outputTokens: last.usage.outputTokens }
+            : null,
+        };
+      }),
       recent: [...this.recentQueries],
     };
   }
@@ -134,6 +144,7 @@ export class ClaudeManager {
     session: ClaudeSession,
     turnCount: number | null,
     error: string | null,
+    usage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number },
   ): void {
     this.recentQueries.unshift({
       startedAt: startedAt.toISOString(),
@@ -143,6 +154,9 @@ export class ClaudeManager {
       turnCount: turnCount ?? 0,
       ok: error === null,
       error: error ? error.slice(0, 200) : null,
+      inputTokens: usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      cacheReadTokens: usage?.cacheReadTokens ?? 0,
     });
     if (this.recentQueries.length > 20) {
       this.recentQueries.length = 20;

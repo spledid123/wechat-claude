@@ -4,11 +4,22 @@
 
 import type { ClaudePermissionResult } from "./permissions.js";
 
+/** Token usage from the SDK result message. */
+export interface QueryUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
 /** Result returned from a Claude query. */
 export interface ClaudeQueryResult {
   text: string;
+  /** Authoritative turn count from the SDK result message. */
   turnCount: number;
   sessionId: string;
+  usage?: QueryUsage;
+  durationMs?: number;
 }
 
 /** Media types accepted by the Anthropic-compatible image content block. */

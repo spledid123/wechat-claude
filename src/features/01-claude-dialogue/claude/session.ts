@@ -72,6 +72,9 @@ export class ClaudeSession {
     let assistantText = "";
     let resultError: string | null = null;
     let turnCount = 0;
+    let resultTurns: number | null = null;
+    let resultUsage: import("./types.js").QueryUsage | undefined;
+    let resultDurationMs: number | undefined;
     this.isProcessing = true;
     this.lastQueryAtIso = new Date().toISOString();
 
@@ -105,11 +108,37 @@ export class ClaudeSession {
       for await (const msg of query(queryArgs)) {
         logSdkEvent(this.sessionId, this.cwd, msg);
         if (msg.type === "result") {
-          const result = msg as { result?: unknown; subtype?: unknown };
+          const result = msg as {
+            result?: unknown;
+            subtype?: unknown;
+            num_turns?: unknown;
+            duration_ms?: unknown;
+            usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              cache_read_input_tokens?: number;
+              cache_creation_input_tokens?: number;
+            };
+          };
           if (typeof result.result === "string") {
             resultText = result.result;
           } else if (result.subtype && result.subtype !== "success") {
             resultError = describeResultError(msg);
+          }
+          // Authoritative stats from the SDK's own result message.
+          if (typeof result.num_turns === "number" && result.num_turns > 0) {
+            resultTurns = result.num_turns;
+          }
+          if (typeof result.duration_ms === "number") {
+            resultDurationMs = result.duration_ms;
+          }
+          if (result.usage) {
+            resultUsage = {
+              inputTokens: result.usage.input_tokens ?? 0,
+              outputTokens: result.usage.output_tokens ?? 0,
+              cacheReadTokens: result.usage.cache_read_input_tokens ?? 0,
+              cacheWriteTokens: result.usage.cache_creation_input_tokens ?? 0,
+            };
           }
         } else if (msg.type === "assistant") {
           turnCount++;
@@ -128,7 +157,13 @@ export class ClaudeSession {
           ? `Claude 执行失败：${resultError}`
           : "";
 
-    this.lastResult = { text, turnCount, sessionId: this.sessionId };
+    this.lastResult = {
+      text,
+      turnCount: resultTurns ?? turnCount,
+      sessionId: this.sessionId,
+      usage: resultUsage,
+      durationMs: resultDurationMs,
+    };
     return this.lastResult;
   }
 
