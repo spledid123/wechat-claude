@@ -149,7 +149,10 @@ export async function extractImageWithVision(
       signal: controller.signal,
       body: JSON.stringify({
         model: options.model,
-        max_tokens: 1024,
+        // The vision model reasons before emitting text and thinking counts
+        // against max_tokens — a small budget truncates the JSON answer
+        // mid-stream on complex images.
+        max_tokens: 8192,
         messages: [
           {
             role: "user",
@@ -246,7 +249,7 @@ function describeHttpError(status: number, body: string): string {
 
 function readTimeoutEnv(): number {
   const raw = process.env.WECHAT_CLAUDE_VISION_TIMEOUT_MS;
-  if (!raw) return 30_000;
+  if (!raw) return 60_000;
   const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
 }
