@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getDb, queryAll, queryOne } from "../01-claude-dialogue/db/connection.js";
+import { getRootLogger } from "../../runtime/logger.js";
 
 export type ScheduledTaskMode = "send_text" | "agent_prompt";
 export type ScheduleType = "once" | "daily" | "weekly";
@@ -359,8 +360,9 @@ export class SchedulerEngine {
       } catch (err) {
         // One failing task (e.g. an expired context token) must not block the
         // other due tasks this tick. Log and continue.
-        console.error(
-          `[scheduler] task "${task.title}" (${task.id}) failed: ${(err as Error).message}`,
+        getRootLogger().error(
+          `[scheduler] task "${task.title}" (${task.id}) failed`,
+          err,
         );
       }
       // Always advance next_run_at even on failure, so a permanently-broken

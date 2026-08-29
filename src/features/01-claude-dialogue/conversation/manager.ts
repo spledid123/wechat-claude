@@ -160,16 +160,8 @@ export class ConversationManager {
       });
     }
 
-    if (opts.itemType === "image") {
-      candidates.push({
-        sql: `SELECT text_content
-              FROM message_text_index
-              WHERE user_id = ? AND item_type = 'image'
-              ORDER BY created_at DESC
-              LIMIT 1`,
-        params: [userId],
-      });
-    }
+    // No item_type fallback: matching "the user's latest image" can silently
+    // return the wrong image's content. Prefer an honest miss.
 
     for (const candidate of candidates) {
       const row = queryOne<{ text_content: string | null }>(candidate.sql, candidate.params);
@@ -178,6 +170,25 @@ export class ConversationManager {
     }
 
     return null;
+  }
+
+  /**
+   * Append late-arriving content to a stored message row. Used by direct
+   * image mode: the async vision extraction lands after the reply was sent,
+   * and the next turn's history injection should carry the image content.
+   */
+  appendTextToRow(rowId: number, text: string): void {
+    if (rowId <= 0 || !text.trim()) return;
+    const row = queryOne<{ text_content: string | null }>(
+      `SELECT text_content FROM conversations WHERE id = ?`,
+      [rowId],
+    );
+    if (!row) return;
+    const combined = `${row.text_content ?? ""}\n${text}`.slice(0, 1000);
+    getDb().run(
+      `UPDATE conversations SET text_content = ? WHERE id = ?`,
+      [combined, rowId],
+    );
   }
 
   /** Get the most recent messages for a session. */

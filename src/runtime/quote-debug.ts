@@ -23,6 +23,15 @@ export function appendQuoteDebugRecord(
   return record;
 }
 
+/**
+ * One jsonl per sender under logs/quote/ so a single file cannot grow without
+ * bound, and per-user records can be deleted from the admin panel.
+ */
+export function quoteFilePathForUser(logsDir: string, fromUserId: string): string {
+  const safe = fromUserId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64) || "unknown";
+  return path.join(logsDir, "quote", `${safe}.jsonl`);
+}
+
 function buildQuoteDebugRecord(msg: ParsedMessage): QuoteDebugRecord {
   const rawRefMsgs = (msg.raw.item_list ?? [])
     .filter((item) => item.ref_msg)

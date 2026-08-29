@@ -21,6 +21,7 @@ import type {
   QrCodeResponse,
   QrCodeStatusResponse,
 } from "../02-wechat-connectivity/wechat/types.js";
+import { readConfig, writeConfig, type RuntimeConfig } from "../../runtime/config.js";
 
 export interface AdminAuthProvider {
   getQrCode(): Promise<QrCodeResponse>;
@@ -110,6 +111,10 @@ interface DraftRow {
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8787;
+
+function nonEmptyOr(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
 
 export function createAdminServer(options: AdminServerOptions): AdminServer {
   return new AdminServer(options);
@@ -280,7 +285,66 @@ export class AdminServer {
       return;
     }
 
+    if (method === "GET" && url.pathname === "/api/settings") {
+      this.sendJson(res, 200, { ok: true, settings: readConfig(this.options.dataDir) });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/settings") {
+      const body = await readJsonBody(req) as Partial<RuntimeConfig>;
+      const current = readConfig(this.options.dataDir);
+      const next: RuntimeConfig = {
+        imageMode: body.imageMode === "split" ? "split" : "direct",
+        visionModel: nonEmptyOr(body.visionModel, current.visionModel),
+        conversationModel: nonEmptyOr(body.conversationModel, current.conversationModel),
+      };
+      writeConfig(this.options.dataDir, next);
+      this.sendJson(res, 200, { ok: true, settings: next });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/quote-files") {
+      this.sendJson(res, 200, { ok: true, files: this.listQuoteFiles() });
+      return;
+    }
+
+    const quoteDelete = url.pathname.match(/^\/api\/quote-files\/([^/]+)$/);
+    if (method === "DELETE" && quoteDelete) {
+      this.sendJson(res, 200, {
+        ok: true,
+        deleted: this.deleteQuoteFile(decodeURIComponent(quoteDelete[1])),
+      });
+      return;
+    }
+
     this.sendJson(res, 404, { ok: false, error: "Not found." });
+  }
+
+  /** Raw-message debug records, one jsonl per sender under logs/quote/. */
+  private listQuoteFiles(): Array<{ user: string; file: string; sizeBytes: number }> {
+    const dir = path.join(this.options.dataDir, "logs", "quote");
+    if (!fs.existsSync(dir)) return [];
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+      .map((entry) => {
+        const full = path.join(dir, entry.name);
+        return {
+          user: entry.name.replace(/\.jsonl$/, ""),
+          file: entry.name,
+          sizeBytes: fs.statSync(full).size,
+        };
+      })
+      .sort((a, b) => b.sizeBytes - a.sizeBytes);
+  }
+
+  private deleteQuoteFile(user: string): boolean {
+    const safe = user.replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!safe) return false;
+    const file = path.join(this.options.dataDir, "logs", "quote", `${safe}.jsonl`);
+    if (!fs.existsSync(file)) return false;
+    fs.rmSync(file);
+    return true;
   }
 
   private buildStatus(): Record<string, unknown> {
@@ -781,6 +845,24 @@ function renderAdminPage(): string {
       </form>
       <div id="tasks" class="stack muted" style="margin-top:18px;">加载中...</div>
     </section>
+
+    <section class="wide">
+      <h2>模型与图片设置</h2>
+      <form id="settingsForm" class="stack">
+        <div class="grid">
+          <label>图片模式<select name="imageMode"><option value="direct">直连：图片直接进对话（对话模型=视觉模型）</option><option value="split">分离：图片先转文字，对话用对话模型</option></select></label>
+          <label>视觉模型<input name="visionModel" placeholder="deepseek-v4-flash-vision-exp"></label>
+          <label>对话模型（分离模式使用）<input name="conversationModel" placeholder="deepseek-v4-flash"></label>
+        </div>
+        <button type="submit">保存设置</button>
+        <div class="tiny">保存后对下一条消息生效，无需重启。</div>
+      </form>
+    </section>
+
+    <section class="wide">
+      <h2>报文记录（按发送者）</h2>
+      <div id="quoteFiles" class="stack muted">加载中...</div>
+    </section>
   </main>
 
   <script>
@@ -871,8 +953,29 @@ function renderAdminPage(): string {
       $("tasks").innerHTML = taskHtml + draftHtml;
     }
 
+    async function loadSettings() {
+      const { settings } = await api("/api/settings");
+      const form = $("settingsForm");
+      form.elements.imageMode.value = settings.imageMode;
+      form.elements.visionModel.value = settings.visionModel;
+      form.elements.conversationModel.value = settings.conversationModel;
+    }
+
+    async function loadQuoteFiles() {
+      const { files } = await api("/api/quote-files");
+      $("quoteFiles").innerHTML = files.length ? files.map((f) => \`
+        <div class="row">
+          <div class="row-main">
+            <strong>\${safe(f.user)}</strong>
+            <p>大小：\${(f.sizeBytes / 1024).toFixed(1)} KB</p>
+          </div>
+          <button class="danger" data-delete-quote="\${safe(f.user)}">删除</button>
+        </div>
+      \`).join("") : "暂无报文记录";
+    }
+
     async function refreshAll() {
-      await Promise.all([loadStatus(), loadAuth(), loadConversations(), loadTasks()]);
+      await Promise.all([loadStatus(), loadAuth(), loadConversations(), loadTasks(), loadSettings(), loadQuoteFiles()]);
     }
 
     $("refresh").addEventListener("click", () => refreshAll().catch(alert));
@@ -906,9 +1009,24 @@ function renderAdminPage(): string {
       await loadTasks();
       await loadStatus();
     });
+    $("settingsForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      await api("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          imageMode: form.get("imageMode"),
+          visionModel: form.get("visionModel"),
+          conversationModel: form.get("conversationModel"),
+        }),
+      });
+      await loadSettings();
+      alert("设置已保存，对下一条消息生效。");
+    });
     document.body.addEventListener("click", async (event) => {
       const sessionId = event.target?.dataset?.deleteSession;
       const taskId = event.target?.dataset?.deleteTask;
+      const quoteUser = event.target?.dataset?.deleteQuote;
       if (sessionId && confirm("删除这个会话及其工作目录？")) {
         await api("/api/sessions/" + encodeURIComponent(sessionId), { method: "DELETE" });
         await refreshAll();
@@ -916,6 +1034,10 @@ function renderAdminPage(): string {
       if (taskId && confirm("删除这个定时任务？")) {
         await api("/api/tasks/" + encodeURIComponent(taskId), { method: "DELETE" });
         await refreshAll();
+      }
+      if (quoteUser && confirm("删除该发送者的报文记录？")) {
+        await api("/api/quote-files/" + encodeURIComponent(quoteUser), { method: "DELETE" });
+        await loadQuoteFiles();
       }
     });
     refreshAll().catch((err) => {

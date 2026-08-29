@@ -5,6 +5,7 @@
  * The WASM file is bundled with the sql.js npm package and loaded automatically.
  */
 
+import { getRootLogger } from "../../../runtime/logger.js";
 import initSqlJs, {
   type Database as SqlJsDatabase,
   type SqlJsStatic,
@@ -201,7 +202,7 @@ function runMigrations(): void {
 
   const migrationsDir = findMigrationsDir();
   if (!fs.existsSync(migrationsDir)) {
-    console.warn(`Migrations directory not found: ${migrationsDir}`);
+    getRootLogger().warn(`Migrations directory not found: ${migrationsDir}`);
     return;
   }
 

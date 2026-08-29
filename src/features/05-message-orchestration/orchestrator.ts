@@ -1,5 +1,6 @@
 import { MULTI_BUBBLE_SEPARATOR, MAX_BUBBLES } from "../01-claude-dialogue/prompt-builder.js";
 import { getDb } from "../01-claude-dialogue/db/connection.js";
+import { getRootLogger } from "../../runtime/logger.js";
 import type { ConversationManager } from "../01-claude-dialogue/conversation/manager.js";
 import type { SessionManager } from "../01-claude-dialogue/session/manager.js";
 import type {
@@ -193,7 +194,6 @@ export class MessageOrchestrator {
     return (
       t === "/new"
       || t === "/help"
-      || t === "/continue"
       || t === "/list"
       || t === "对话存档"
       || t === "存档"
@@ -227,7 +227,7 @@ export class MessageOrchestrator {
       // Never let a batch failure become an unhandled rejection (which would
       // take down the process) or vanish silently — tell the user their
       // messages could not be processed so they can retry.
-      console.error(`[orchestrator] flush failed: ${(err as Error).message}`);
+      getRootLogger().error("[orchestrator] flush failed", err);
       try {
         await this.sendText({
           toUserId: last.fromUserId,
@@ -248,14 +248,16 @@ export class MessageOrchestrator {
       .map((input) => input.msg.text || input.msg.voiceText || `[${input.msg.itemTypes.join(",")}]`)
       .join("\n");
 
+    // raw_payload_json intentionally not stored: it duplicated every inbound
+    // payload (nothing ever read it back) while sql.js keeps the whole DB in
+    // memory. Raw payloads remain in logs/quote/<user>.jsonl for debugging.
     getDb().run(
-      `INSERT INTO turns (session_id, context_token, role, normalized_text, raw_payload_json, status, created_at)
-       VALUES (?, ?, 'buffered_user', ?, ?, ?, ?)`,
+      `INSERT INTO turns (session_id, context_token, role, normalized_text, status, created_at)
+       VALUES (?, ?, 'buffered_user', ?, ?, ?)`,
       [
         batch.sessionId,
         last.contextToken,
         normalizedText,
-        JSON.stringify(batch.inputs.map((input) => input.msg.raw)),
         status,
         new Date().toISOString(),
       ],

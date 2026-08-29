@@ -7,6 +7,7 @@
  */
 
 import { decryptAesEcb } from "./crypto.js";
+import { getRootLogger } from "../../../runtime/logger.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -79,7 +80,7 @@ export async function downloadFromCdn(
   const key = decodeAesKey(aesKeyRaw);
   if (!key) {
     // Never log the key material itself.
-    console.error("  CDN key decode failed (unrecognized key format)");
+    getRootLogger().warn("CDN key decode failed (unrecognized key format)");
     return null;
   }
 
@@ -100,23 +101,23 @@ export async function downloadFromCdn(
     });
 
     if (!response.ok) {
-      console.error(`  CDN ${response.status}: ${downloadUrl.slice(0, 100)}`);
+      getRootLogger().warn(`CDN ${response.status}: ${downloadUrl.slice(0, 100)}`);
       return null;
     }
 
     // Reject oversized files up front when the CDN advertises a length.
     const declaredLen = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredLen) && declaredLen > MAX_DOWNLOAD_BYTES) {
-      console.error(
-        `  CDN file too large: ${declaredLen} bytes (max ${MAX_DOWNLOAD_BYTES})`,
+      getRootLogger().warn(
+        `CDN file too large: ${declaredLen} bytes (max ${MAX_DOWNLOAD_BYTES})`,
       );
       return null;
     }
 
     const encrypted = Buffer.from(await response.arrayBuffer());
     if (encrypted.length > MAX_DOWNLOAD_BYTES) {
-      console.error(
-        `  CDN file too large after download: ${encrypted.length} bytes`,
+      getRootLogger().warn(
+        `CDN file too large after download: ${encrypted.length} bytes`,
       );
       return null;
     }
@@ -124,10 +125,10 @@ export async function downloadFromCdn(
 
     const filePath = path.join(outputDir, safeFileName(fileName));
     fs.writeFileSync(filePath, decrypted);
-    console.log(`  CDN OK: ${path.basename(filePath)} (${decrypted.length} bytes)`);
+    getRootLogger().debug(`CDN OK: ${path.basename(filePath)} (${decrypted.length} bytes)`);
     return filePath;
   } catch (err) {
-    console.error(`  CDN err: ${(err as Error).message}`);
+    getRootLogger().warn(`CDN err: ${(err as Error).message}`);
     return null;
   } finally {
     clearTimeout(timer);

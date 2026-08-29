@@ -11,6 +11,24 @@ export interface ClaudeQueryResult {
   sessionId: string;
 }
 
+/** Media types accepted by the Anthropic-compatible image content block. */
+export type InlineImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+
+/** A user message that carries inline image blocks (direct image mode). */
+export interface UserBlocksMessage {
+  role: "user";
+  content: Array<
+    | { type: "text"; text: string }
+    | {
+      type: "image";
+      source: { type: "base64"; media_type: InlineImageMediaType; data: string };
+    }
+  >;
+}
+
+/** querySimple accepts a plain string or a multimodal blocks message. */
+export type UserMessageContent = string | UserBlocksMessage;
+
 /** Options for constructing a ClaudeSession. */
 export interface ClaudeSessionOptions {
   sessionId: string;
@@ -89,5 +107,11 @@ export interface PromptContext {
     mimeType?: string;
     /** If preprocessing failed, the error description. */
     preprocessingError?: string;
+  }>;
+  /** Images inlined as content blocks (direct image mode). */
+  images?: Array<{
+    name: string;
+    base64: string;
+    mediaType: InlineImageMediaType;
   }>;
 }

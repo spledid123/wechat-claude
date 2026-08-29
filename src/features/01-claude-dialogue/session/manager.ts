@@ -48,12 +48,45 @@ export class SessionManager {
     if (activeSession) {
       const elapsed = this.elapsedMinutes(activeSession.lastActiveAt);
       if (elapsed < this.sessionTimeoutMinutes) {
-        return activeSession;
+        return this.ensureWorkspace(activeSession);
       }
       // Timed out — close it
       this.closeSession(activeSession.id, "timeout");
     }
     return this.createSession(fromUserId);
+  }
+
+  /**
+   * The data dir can move (portable exe, folder relocation) — stored cwd
+   * values go stale and would scatter files to the old location. Remap the
+   * session onto the current workspace base and recreate its directories.
+   */
+  private ensureWorkspace(session: SessionRecord): SessionRecord {
+    const dirName = session.cwd
+      ? path.basename(session.cwd)
+      : `session-${session.id.slice(0, 8)}`;
+    const expected = path.join(this.workspaceBase, dirName);
+    const stale = !session.cwd
+      || path.resolve(session.cwd).toLowerCase() !== path.resolve(expected).toLowerCase();
+    if (stale) {
+      this.createWorkspaceDirs(expected);
+      getDb().run("UPDATE sessions SET cwd = ? WHERE id = ?", [expected, session.id]);
+      session.cwd = expected;
+    } else {
+      this.createWorkspaceDirs(session.cwd);
+    }
+    return session;
+  }
+
+  private createWorkspaceDirs(workspaceDir: string): void {
+    for (const subdir of [
+      "incoming",
+      "working",
+      path.join("working", "output_weixin"),
+      "output",
+    ]) {
+      fs.mkdirSync(path.join(workspaceDir, subdir), { recursive: true });
+    }
   }
 
   /** Create a new session + workspace directories. */
@@ -81,15 +114,7 @@ export class SessionManager {
       `session-${sessionId.slice(0, 8)}`,
     );
 
-    // Create workspace subdirectories
-    for (const subdir of [
-      "incoming",
-      "working",
-      path.join("working", "output_weixin"),
-      "output",
-    ]) {
-      fs.mkdirSync(path.join(workspaceDir, subdir), { recursive: true });
-    }
+    this.createWorkspaceDirs(workspaceDir);
 
     const now = new Date().toISOString();
     db.run(

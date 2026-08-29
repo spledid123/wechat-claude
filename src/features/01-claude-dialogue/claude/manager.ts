@@ -6,10 +6,11 @@
  */
 
 import { ClaudeSession } from "./session.js";
-import type { SessionSpec, PromptContext, ClaudeQueryResult } from "./types.js";
+import type { SessionSpec, PromptContext, ClaudeQueryResult, UserMessageContent } from "./types.js";
 import {
   buildSystemPromptAppend,
   buildUserMessage,
+  buildUserBlocksMessage,
 } from "../prompt-builder.js";
 
 export class ClaudeManager {
@@ -25,7 +26,15 @@ export class ClaudeManager {
   /** Get an existing session or create a new one. */
   getOrCreateSession(spec: SessionSpec): ClaudeSession {
     const existing = this.sessions.get(spec.sessionId);
-    if (existing) return existing;
+    if (existing) {
+      // The model is a per-query attribute. When the runtime config switches
+      // models, replace the cached session so the next query picks it up.
+      // Sessions are lightweight wrappers — conversation context comes from
+      // the DB history injection, so recreation loses nothing.
+      if ((spec.model ?? undefined) === existing.getModel()) return existing;
+      existing.cancel();
+      this.sessions.delete(spec.sessionId);
+    }
 
     const session = new ClaudeSession({
       sessionId: spec.sessionId,
@@ -58,7 +67,9 @@ export class ClaudeManager {
     const session = this.getOrCreateSession(spec);
 
     const systemAppend = buildSystemPromptAppend(ctx);
-    const userMessage = buildUserMessage(ctx);
+    const userMessage: UserMessageContent = (ctx.images?.length ?? 0) > 0
+      ? buildUserBlocksMessage(ctx)
+      : buildUserMessage(ctx);
 
     await this.acquire();
     try {

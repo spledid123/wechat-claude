@@ -5,12 +5,16 @@
  * it to the mock during tests.
  */
 
-import type { ClaudeSessionOptions, ClaudeQueryResult } from "./types.js";
+import type {
+  ClaudeSessionOptions,
+  ClaudeQueryResult,
+  UserMessageContent,
+  UserBlocksMessage,
+} from "./types.js";
 import { createClaudePermissionPolicy } from "./permissions.js";
+import { getDiagnosticsFile } from "../../../runtime/logger.js";
 import fs from "node:fs";
 import path from "node:path";
-
-const SDK_EVENT_LOG_PATH = path.resolve(process.cwd(), ".tmp", "claude-sdk-events.jsonl");
 
 export class ClaudeSession {
   public readonly sessionId: string;
@@ -43,16 +47,25 @@ export class ClaudeSession {
   /**
    * Send a single user message and get the AI's text response.
    *
-   * @param userText       The user's message.
+   * @param userMessage    Plain text, or a multimodal message with inline
+   *                       image blocks (direct image mode).
    * @param systemAppend   Extra instructions appended to the system prompt.
    * @param mcpServers     Optional MCP server config for tools.
    */
   async querySimple(
-    userText: string,
+    userMessage: UserMessageContent,
     systemAppend?: string,
     mcpServers?: Record<string, unknown>,
   ): Promise<ClaudeQueryResult> {
     const { query } = await import("@anthropic-ai/claude-agent-sdk");
+
+    // String prompts pass through unchanged; block messages are wrapped in a
+    // single-item async iterable, which is the SDK's multimodal prompt form.
+    const prompt: string | AsyncIterable<unknown> = typeof userMessage === "string"
+      ? userMessage
+      : (async function* () {
+          yield toSdkUserMessage(userMessage);
+        })();
 
     let resultText = "";
     let assistantText = "";
@@ -61,8 +74,8 @@ export class ClaudeSession {
     this.isProcessing = true;
 
     try {
-      for await (const msg of query({
-        prompt: userText,
+      const queryArgs = {
+        prompt,
         options: {
           model: this.model,
           cwd: this.cwd,
@@ -73,10 +86,10 @@ export class ClaudeSession {
           settings: this.settings,
           systemPrompt: systemAppend
             ? {
-                type: "preset",
-                preset: "claude_code",
-                append: systemAppend,
-              }
+              type: "preset",
+              preset: "claude_code",
+              append: systemAppend,
+            }
             : undefined,
           maxTurns: this.maxTurns,
           includePartialMessages: true,
@@ -85,7 +98,9 @@ export class ClaudeSession {
           settingSources: [],
           ...(mcpServers ? { mcpServers } as Record<string, unknown> : {}),
         },
-      })) {
+      } as Parameters<typeof query>[0];
+
+      for await (const msg of query(queryArgs)) {
         logSdkEvent(this.sessionId, this.cwd, msg);
         if (msg.type === "result") {
           const result = msg as { result?: unknown; subtype?: unknown };
@@ -122,6 +137,11 @@ export class ClaudeSession {
     this.abortController = new AbortController();
   }
 
+  /** The model this session was created with (used to detect config changes). */
+  getModel(): string | undefined {
+    return this.model;
+  }
+
   getIsProcessing(): boolean {
     return this.isProcessing;
   }
@@ -129,6 +149,18 @@ export class ClaudeSession {
   getLastResult(): ClaudeQueryResult | null {
     return this.lastResult;
   }
+}
+
+/**
+ * Shape of the SDK's internal user message. Built as a plain literal so we do
+ * not depend on non-exported SDK internals.
+ */
+function toSdkUserMessage(message: UserBlocksMessage): Record<string, unknown> {
+  return {
+    type: "user",
+    message,
+    parent_tool_use_id: null,
+  };
 }
 
 function createSessionSandbox(cwd: string): NonNullable<ClaudeSessionOptions["sandbox"]> {
@@ -226,14 +258,17 @@ function describeResultError(msg: unknown): string {
 }
 
 function logSdkEvent(sessionId: string, cwd: string, msg: unknown): void {
-  if (process.env.CLAUDE_SDK_EVENT_LOG === "0") {
+  // Opt-in diagnostics dump — writes every SDK event, so it is off unless
+  // explicitly requested with CLAUDE_SDK_EVENT_LOG=1.
+  if (process.env.CLAUDE_SDK_EVENT_LOG !== "1") {
     return;
   }
 
   try {
-    fs.mkdirSync(path.dirname(SDK_EVENT_LOG_PATH), { recursive: true });
+    const logPath = getDiagnosticsFile("claude-sdk-events.jsonl");
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
     fs.appendFileSync(
-      SDK_EVENT_LOG_PATH,
+      logPath,
       `${JSON.stringify({
         time: new Date().toISOString(),
         sessionId,

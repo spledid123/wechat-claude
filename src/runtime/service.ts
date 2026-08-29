@@ -20,8 +20,10 @@ import {
   createWechatTypingService,
 } from "./wechat-runtime.js";
 import { buildRuntimePaths, type RuntimePaths } from "./paths.js";
-import { createRuntimeLogger, type RuntimeLogger } from "./logger.js";
-import { appendQuoteDebugRecord } from "./quote-debug.js";
+import { createRuntimeLogger, setRootLogger, setDiagnosticsDir, type RuntimeLogger } from "./logger.js";
+import { readConfig } from "./config.js";
+import { appendQuoteDebugRecord, quoteFilePathForUser } from "./quote-debug.js";
+import { runStartupStorageCleanup } from "./storage-cleanup.js";
 
 export type WechatClaudeServiceState =
   | "idle"
@@ -77,6 +79,8 @@ export class WechatClaudeService {
       dataDir: options.dataDir,
     });
     this.logger = createRuntimeLogger(this.paths.logsDir);
+    setRootLogger(this.logger);
+    setDiagnosticsDir(this.paths.logsDir);
     this.adminPort = options.adminPort ?? readPortFromEnv(8787);
     this.sessionTimeoutMinutes = options.sessionTimeoutMinutes ?? 60;
     this.autoSaveIntervalMs = options.autoSaveIntervalMs ?? 30_000;
@@ -129,6 +133,15 @@ export class WechatClaudeService {
       await initializeDatabase(this.paths.bridgeDataDir);
       startAutoSave(this.autoSaveIntervalMs);
 
+      const cleanup = runStartupStorageCleanup(this.paths.workspaceBase);
+      if (cleanup.turnsDeleted > 0 || cleanup.closedSessionsDeleted > 0 || cleanup.workspacesRemoved > 0) {
+        this.logger.info(
+          `Storage cleanup: ${cleanup.turnsDeleted} audit turns, `
+            + `${cleanup.closedSessionsDeleted} expired sessions, `
+            + `${cleanup.workspacesRemoved} workspaces removed.`,
+        );
+      }
+
       this.claude = new ClaudeManager(this.maxClaudeConcurrency);
       const sm = new SessionManager(this.paths.workspaceBase, this.sessionTimeoutMinutes);
       const cm = new ConversationManager();
@@ -148,8 +161,15 @@ export class WechatClaudeService {
           if (!this.claude) throw new Error("Claude manager is not running.");
           const session = sm.resolveSession(userId);
           sm.updateContextToken(session.id, contextToken);
+          const agentConfig = readConfig(this.paths.dataDir);
           const result = await this.claude.processMessage(
-            { sessionId: session.id, cwd: session.cwd },
+            {
+              sessionId: session.id,
+              cwd: session.cwd,
+              model: agentConfig.imageMode === "direct"
+                ? agentConfig.visionModel
+                : agentConfig.conversationModel,
+            },
             { userText: prompt },
           );
           return result.text;
@@ -185,6 +205,7 @@ export class WechatClaudeService {
         botToken,
         undefined,
         this.scheduler,
+        () => readConfig(this.paths.dataDir),
       );
       const typingService = await createWechatTypingService(botToken);
       this.orchestrator = new MessageOrchestrator(
@@ -222,7 +243,10 @@ export class WechatClaudeService {
         botToken,
         {
           onMessage: async (msg: ParsedMessage) => {
-            const quoteRecord = appendQuoteDebugRecord(msg, this.paths.quoteJsonlPath);
+            const quoteRecord = appendQuoteDebugRecord(
+              msg,
+              quoteFilePathForUser(this.paths.logsDir, msg.raw.from_user_id),
+            );
             const time = new Date().toLocaleTimeString();
             this.logger.info(`[${time}] inbound ${msg.itemTypes.join("/")} from ${msg.raw.from_user_id}`);
             if (msg.text) this.logger.info(`text: ${msg.text.slice(0, 120)}`);

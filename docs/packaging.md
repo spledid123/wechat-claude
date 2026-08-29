@@ -70,14 +70,12 @@ portable exe 已包含 Electron/Node 运行时、编译后的应用代码、`@an
 
 - Claude/DeepSeek/Anthropic 认证配置：系统环境变量、exe 同目录 `.env` 或 `.wechat-claude\.env`。
 - 网络：微信 iLink Bot API 和模型 API。
-- Python：仅当启用 PDF/图片/Office 预处理能力时需要；普通聊天和微信收发不需要。
+- Python：仅当启用 PDF/Office 文档预处理（markitdown）时需要；图片解析走内置 vision 模型，普通聊天和微信收发不需要。
 
-## PDF / 图片解析能力
+## 图片与文档解析能力
 
-正式预处理能力按 `test/features/03-file-preprocessing/README.md` 验收：
-
-- 图片：`.png .jpg .jpeg .gif .bmp .webp` 走 PaddleOCR。
-- 文档：`.pdf .docx .doc .xlsx .xls .pptx .ppt` 走 markitdown。
+- 图片：`.png .jpg .jpeg .gif .webp` 走 DeepSeek vision 模型（`deepseek-v4-flash-vision-exp`），无需 Python。模式（直连/分离）在 `.wechat-claude/config.json` 配置，管理面板可改。
+- 文档：`.pdf .docx .doc .xlsx .xls .pptx .ppt` 走 markitdown（可选 Python 环境）。
 - 文本：`.txt .py .js .csv .json .md .log` 等直接读取。
 - 失败不阻断主流程，错误会进入 `preprocessingError`。
 
@@ -103,13 +101,13 @@ WECHAT_CLAUDE_PREPROCESS_TIMEOUT_MS=60000
 WECHAT_CLAUDE_PREPROCESS_MAX_CHARS=50000
 ```
 
-本机用 `test/pic` 完整验证过：
+vision 图片链路的验证脚本：
 
 ```powershell
-node_modules\.bin\tsx.cmd scripts\preprocess-test.ts
+npx tsx scripts\vision-test.ts .\some-image.png            离线检查（格式/大小/blocks 组装）
+npx tsx scripts\vision-test.ts .\some-image.png --extract  调用视觉模型提取描述+文字
+npx tsx scripts\vision-test.ts .\some-image.png --direct   端到端：blocks 经 Agent SDK 进主对话
 ```
-
-验证结果覆盖 PDF、PNG、JPG、DOCX、XLSX 和文本样本，均能输出 `OK`。
 
 迁移给用户时有三种交付方式：
 
@@ -123,7 +121,7 @@ node_modules\.bin\tsx.cmd scripts\preprocess-test.ts
 
 .wechat-claude/ 不需要手动空建，程序首次运行会自动创建。只有迁移旧 token、历史对话、定时任务或工作区时才复制旧目录。
 
-不建议把 `.venv` 打进单文件 portable exe。当前本机 `.venv` 约 1.7GB，且 PaddleOCR 模型缓存可能在用户目录；直接打包会让产物巨大，并可能因为 venv 绑定本机 Python 路径而降低可迁移性。
+不建议把 `.venv` 打进单文件 portable exe。现在 venv 只服务 markitdown（无 PaddleOCR），体积大幅缩小，但仍可能因为 venv 绑定本机 Python 路径而降低可迁移性。
 
 ## 数据目录
 
@@ -250,3 +248,10 @@ electron-builder 还会自动下载并缓存 NSIS 相关包，例如 `nsis-3.0.4
 - 当前没有代码签名。
 - 单文件 portable exe 依赖 electron-builder 下载 NSIS 工具；如果网络失败，不影响 `win-unpacked` 和 zip 版本使用。
 - npm audit 显示依赖树存在安全提示，主要来自 Electron/builder 生态依赖，后续正式发布前应单独处理。
+
+## 运行时配置与维护
+
+- `.wechat-claude/config.json`：`imageMode`（direct/split）、`visionModel`、`conversationModel`；管理面板"模型与图片设置"直接读写，对下一条消息生效。
+- 日志：`logs/service.log` 按大小轮转（默认 5MB，`WECHAT_CLAUDE_LOG_MAX_MB`）；每条消息的原始报文按发送者记录在 `logs/quote/<发送者>.jsonl`，管理面板可查看和删除。
+- 存储清理：启动时自动执行，turns 保留 7 天、过期会话与孤儿工作区目录保留 30 天（`WECHAT_CLAUDE_RETENTION_DAYS`，0 关闭）；引用索引 `message_text_index` 永不清理。
+- 数据目录整体搬迁后无需手工修正：会话工作区路径在下次使用时自动重映射到当前目录。

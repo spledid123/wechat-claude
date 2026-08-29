@@ -1,7 +1,10 @@
 /**
- * Routes files to text extraction, OCR, or document conversion before they
- * are given to Claude. Text files are handled in-process; images/PDF/Office
- * files use the optional Python preprocessing environment.
+ * Routes files to text extraction or document conversion before they are
+ * given to Claude. Text files are handled in-process; PDF/Office files use
+ * the optional Python preprocessing environment (markitdown).
+ *
+ * Images are NOT handled here — the bridge routes them to the vision model
+ * (see ../03-file-preprocessing/vision.ts and the imageMode config).
  */
 
 import { spawn } from "node:child_process";
@@ -27,11 +30,7 @@ export interface FilePreprocessorOptions {
   timeoutMs?: number;
 }
 
-type ProcessMode = "ocr" | "markitdown" | "text" | "unsupported";
-
-const OCR_EXTENSIONS = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
-]);
+type ProcessMode = "markitdown" | "text" | "unsupported";
 
 const MARKITDOWN_EXTENSIONS = new Set([
   ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt",
@@ -45,12 +44,6 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 const MIME_MAP: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".bmp": "image/bmp",
-  ".webp": "image/webp",
   ".pdf": "application/pdf",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".doc": "application/msword",
@@ -110,9 +103,7 @@ export class FilePreprocessor {
       return readTextFile(filePath, mimeType);
     }
 
-    const result = mode === "ocr"
-      ? await this.runOcrWithRetry(filePath)
-      : await this.runPython(mode, filePath);
+    const result = await this.runPython(mode, filePath);
     return {
       extractedText: result.ok ? (result.text ?? null) : null,
       mimeType,
@@ -125,7 +116,7 @@ export class FilePreprocessor {
     return Promise.all(filePaths.map((fp) => this.process(fp)));
   }
 
-  private runPython(mode: Exclude<ProcessMode, "text" | "unsupported">, filePath: string): Promise<PythonResult> {
+  private runPython(mode: "markitdown", filePath: string): Promise<PythonResult> {
     return new Promise((resolve) => {
       if (!this.preprocessScript || !fs.existsSync(this.preprocessScript)) {
         resolve({
@@ -186,28 +177,10 @@ export class FilePreprocessor {
       });
     });
   }
-
-  private async runOcrWithRetry(filePath: string): Promise<PythonResult> {
-    const first = await this.runPython("ocr", filePath);
-    if (first.ok || !shouldRetryOcr(first.error)) {
-      return first;
-    }
-
-    const second = await this.runPython("ocr", filePath);
-    if (second.ok) {
-      return second;
-    }
-
-    return {
-      ...second,
-      error: second.error ?? first.error ?? "OCR 无法识别文字",
-    };
-  }
 }
 
 function detectMode(filePath: string): ProcessMode {
   const ext = path.extname(filePath).toLowerCase();
-  if (OCR_EXTENSIONS.has(ext)) return "ocr";
   if (MARKITDOWN_EXTENSIONS.has(ext)) return "markitdown";
   if (TEXT_EXTENSIONS.has(ext)) return "text";
   return "unsupported";
@@ -298,9 +271,4 @@ function readNumberEnv(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function shouldRetryOcr(error?: string): boolean {
-  if (!error) return false;
-  return error.includes("OCR") || error.includes("超时") || error.includes("timeout");
 }

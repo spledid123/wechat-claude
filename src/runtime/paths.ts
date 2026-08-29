@@ -8,7 +8,6 @@ export interface RuntimePaths {
   tokenFile: string;
   qrImagePath: string;
   logsDir: string;
-  quoteJsonlPath: string;
 }
 
 export function getOfficialDataDir(repoRoot = process.cwd()): string {
@@ -35,6 +34,5 @@ export function buildRuntimePaths(options: {
     tokenFile: path.join(dataDir, "bot_token.txt"),
     qrImagePath: path.join(dataDir, "wechat-qr.png"),
     logsDir,
-    quoteJsonlPath: path.join(logsDir, "quote-listener.jsonl"),
   };
 }

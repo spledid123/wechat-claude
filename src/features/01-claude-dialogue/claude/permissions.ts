@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import { getDiagnosticsFile } from "../../../runtime/logger.js";
 
 export interface ClaudePermissionPolicy {
   mode: "default";
@@ -53,8 +54,6 @@ const WRITE_TOOLS = new Set([
 const PREAPPROVED_TOOLS = [
   ...ALWAYS_ALLOW_TOOLS,
 ];
-
-const PERMISSION_LOG_PATH = path.resolve(process.cwd(), ".tmp", "claude-permissions.jsonl");
 
 const BASH_ALWAYS_DENY_PATTERNS = [
   /\bgit\s+reset\s+--hard\b/,
@@ -585,14 +584,16 @@ function logPermissionDecision(
   workspaceRoot: string,
   result: ClaudePermissionResult,
 ): void {
-  if (process.env.CLAUDE_PERMISSION_LOG === "0") {
+  // Opt-in diagnostics dump; off unless CLAUDE_PERMISSION_LOG=1.
+  if (process.env.CLAUDE_PERMISSION_LOG !== "1") {
     return;
   }
 
   try {
-    fs.mkdirSync(path.dirname(PERMISSION_LOG_PATH), { recursive: true });
+    const logPath = getDiagnosticsFile("claude-permissions.jsonl");
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
     fs.appendFileSync(
-      PERMISSION_LOG_PATH,
+      logPath,
       `${JSON.stringify({
         time: new Date().toISOString(),
         workspaceRoot,

@@ -1,3 +1,4 @@
+import { getRootLogger } from "./logger.js";
 import { getConfig, sendTyping } from "../features/02-wechat-connectivity/wechat/api.js";
 import {
   sendFile,
@@ -41,7 +42,7 @@ export async function createWechatTypingService(botToken: string): Promise<Typin
     const config = await getConfig(botToken);
     const typingTicket = config.typing_ticket?.trim();
     if (!typingTicket) {
-      console.warn("Typing disabled: getconfig did not return typing_ticket.");
+      getRootLogger().warn("Typing disabled: getconfig did not return typing_ticket.");
       return new NoopTypingService();
     }
 
@@ -56,7 +57,7 @@ export async function createWechatTypingService(botToken: string): Promise<Typin
       );
     });
   } catch (err) {
-    console.warn(`Typing disabled: ${(err as Error).message}`);
+    getRootLogger().warn(`Typing disabled: ${(err as Error).message}`);
     return new NoopTypingService();
   }
 }

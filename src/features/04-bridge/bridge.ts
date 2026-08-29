@@ -7,12 +7,33 @@ import type { SessionManager } from "../01-claude-dialogue/session/manager.js";
 import type { ConversationManager } from "../01-claude-dialogue/conversation/manager.js";
 import type { PromptContext, SessionSpec } from "../01-claude-dialogue/claude/types.js";
 import { FilePreprocessor } from "../03-file-preprocessing/preprocessor.js";
+import {
+  prepareImagePayload,
+  extractImageFileWithVision,
+  extractImageWithVision,
+  type ImagePayload,
+} from "../03-file-preprocessing/vision.js";
+import { DEFAULT_CONFIG, type RuntimeConfig } from "../../runtime/config.js";
+import { getRootLogger } from "../../runtime/logger.js";
 import { downloadFromCdn } from "../02-wechat-connectivity/wechat/media.js";
 import type { ParsedMessage } from "../02-wechat-connectivity/wechat/poller.js";
 import { extractMessageItemText } from "../02-wechat-connectivity/wechat/poller.js";
 import { collectPendingWechatFiles, markWechatFilesSent } from "./output-weixin.js";
 import type { SchedulerEngine } from "../06-scheduler/scheduler.js";
 import path from "node:path";
+
+/** DeepSeek accepts many more; this keeps single requests lean. */
+const MAX_IMAGES_PER_REQUEST = 10;
+
+/** Indexed/stored placeholders that carry no real content — treat as unresolved. */
+const PLACEHOLDER_TEXTS = new Set(["[图片]", "[语音]", "[视频]", "[文件]", "[混合消息]"]);
+
+interface PendingImageExtraction {
+  payload: ImagePayload;
+  msgId?: string;
+  aesKey: string;
+  convRowId: number;
+}
 
 export type SendFunc = (params: {
   toUserId: string;
@@ -56,6 +77,7 @@ export class Bridge {
     botToken = "",
     private createMcpServers?: CreateMcpServersFunc,
     private scheduler?: SchedulerEngine,
+    private getConfig?: () => RuntimeConfig,
   ) {
     this.botToken = botToken;
   }
@@ -95,25 +117,26 @@ export class Bridge {
     }
 
     const session = this.sm.resolveSession(first.fromUserId);
-    const spec: SessionSpec = { sessionId: session.id, cwd: session.cwd };
+    const config = this.getRuntimeConfig();
+    const spec: SessionSpec = {
+      sessionId: session.id,
+      cwd: session.cwd,
+      model: config.imageMode === "direct" ? config.visionModel : config.conversationModel,
+    };
     const fileResults: PromptContext["files"] = [];
+    const inlineImages: NonNullable<PromptContext["images"]> = [];
+    const pendingExtractions: PendingImageExtraction[] = [];
     const userParts: string[] = [];
 
     for (const input of inputs) {
-      const quotedResolution = this.resolveQuotedText(input.msg, session.userId);
-      if (quotedResolution.ok === false) {
-        await this.sendText({
-          toUserId: input.fromUserId,
-          contextToken: input.contextToken,
-          text: quotedResolution.error,
-        });
-        return quotedResolution.error;
-      }
-
-      const userText = this.buildUserText(input.msg, quotedResolution.text);
+      // Quote resolution never blocks the message: an unresolvable quote is
+      // downgraded to a hint so the AI can ask the user to re-send the
+      // original instead of dropping what the user actually typed.
+      const quoted = this.resolveQuotedText(input.msg, session.userId);
+      const userText = this.buildUserText(input.msg, quoted.text, quoted.unresolvedLabel);
       userParts.push(userText);
 
-      this.cm.addMessage({
+      const convRowId = this.cm.addMessage({
         sessionId: session.id,
         userId: session.userId,
         direction: "inbound",
@@ -131,43 +154,59 @@ export class Bridge {
           fileName,
         );
 
-        if (dlPath) {
-          const result = await this.pp.process(dlPath);
-          const extractedText = ref.itemType === "voice" && input.msg.voiceText
-            ? undefined
-            : result.extractedText ?? undefined;
-          const transcribedText = ref.itemType === "voice"
-            ? input.msg.voiceText
-            : undefined;
-
-          fileResults.push({
-            name: fileName,
-            path: dlPath,
-            extractedText,
-            transcribedText,
-            mimeType: result.mimeType,
-            preprocessingError: result.error ?? undefined,
-          });
-
-          const indexedText = transcribedText ?? extractedText;
-          if (ref.msgId && indexedText?.trim()) {
-            this.cm.saveMessageText({
-              msgId: ref.msgId,
-              userId: session.userId,
-              sessionId: session.id,
-              fromUserId: input.fromUserId,
-              itemType: ref.itemType,
-              fileName: ref.itemType === "file" ? fileName : undefined,
-              mediaKey: ref.aesKey || undefined,
-              textContent: indexedText,
-            });
-          }
-        } else {
+        if (!dlPath) {
           fileResults.push({
             name: fileName,
             path: "",
             mimeType: "",
             preprocessingError: "CDN download failed",
+          });
+          continue;
+        }
+
+        if (ref.itemType === "image") {
+          await this.handleImageRef({
+            ref,
+            fileName,
+            dlPath,
+            convRowId,
+            session,
+            fromUserId: input.fromUserId,
+            fileResults,
+            inlineImages,
+            pendingExtractions,
+          });
+          continue;
+        }
+
+        const result = await this.pp.process(dlPath);
+        const extractedText = ref.itemType === "voice" && input.msg.voiceText
+          ? undefined
+          : result.extractedText ?? undefined;
+        const transcribedText = ref.itemType === "voice"
+          ? input.msg.voiceText
+          : undefined;
+
+        fileResults.push({
+          name: fileName,
+          path: dlPath,
+          extractedText,
+          transcribedText,
+          mimeType: result.mimeType,
+          preprocessingError: result.error ?? undefined,
+        });
+
+        const indexedText = transcribedText ?? extractedText;
+        if (ref.msgId && indexedText?.trim()) {
+          this.cm.saveMessageText({
+            msgId: ref.msgId,
+            userId: session.userId,
+            sessionId: session.id,
+            fromUserId: input.fromUserId,
+            itemType: ref.itemType,
+            fileName: ref.itemType === "file" ? fileName : undefined,
+            mediaKey: ref.aesKey || undefined,
+            textContent: indexedText,
           });
         }
       }
@@ -180,14 +219,15 @@ export class Bridge {
       historyText: historyText || undefined,
       sessionSummary: summary,
       files: fileResults.length > 0 ? fileResults : undefined,
+      images: inlineImages.length > 0 ? inlineImages : undefined,
     };
 
     if (process.env.BRIDGE_DEBUG) {
       const { buildSystemPromptAppend, buildUserMessage } = await import(
         "../01-claude-dialogue/prompt-builder.js"
       );
-      console.log(`SYSTEM:\n${buildSystemPromptAppend(ctx).slice(0, 2000)}`);
-      console.log(`USER:\n${buildUserMessage(ctx).slice(0, 2000)}`);
+      getRootLogger().debug(`SYSTEM:\n${buildSystemPromptAppend(ctx).slice(0, 2000)}`);
+      getRootLogger().debug(`USER:\n${buildUserMessage(ctx).slice(0, 2000)}`);
     }
 
     const mcpServers = this.createMcpServers?.({
@@ -226,6 +266,12 @@ export class Bridge {
     }
 
     await this.deliverOutputFiles(session.cwd, first.fromUserId, first.contextToken);
+
+    // Fire-and-forget: in direct mode the inline image lives only in this
+    // API call. Extract its content afterwards so the quote index and the
+    // injected conversation history keep it for later turns.
+    this.runImageMemoryWriteBack(pendingExtractions, session, first.fromUserId);
+
     return reply;
   }
 
@@ -319,12 +365,137 @@ export class Bridge {
     return `${ref.itemType}_${Date.now()}${ext}`;
   }
 
+  private getRuntimeConfig(): RuntimeConfig {
+    return this.getConfig?.() ?? DEFAULT_CONFIG;
+  }
+
+  /**
+   * Route one downloaded image according to the configured image mode:
+   *  split  — vision pre-extraction, text goes into extractedText + index
+   *  direct — inline image block for this turn + async memory write-back
+   */
+  private async handleImageRef(args: {
+    ref: { aesKey: string; itemType: string; msgId?: string };
+    fileName: string;
+    dlPath: string;
+    convRowId: number;
+    session: { id: string; userId: number };
+    fromUserId: string;
+    fileResults: NonNullable<PromptContext["files"]>;
+    inlineImages: NonNullable<PromptContext["images"]>;
+    pendingExtractions: PendingImageExtraction[];
+  }): Promise<void> {
+    const config = this.getRuntimeConfig();
+
+    if (config.imageMode === "split") {
+      const result = await extractImageFileWithVision(args.dlPath, args.fileName, {
+        model: config.visionModel,
+      });
+      if (result.ok) {
+        args.fileResults.push({
+          name: args.fileName,
+          path: args.dlPath,
+          extractedText: result.text,
+          mimeType: "image/*",
+        });
+        this.saveImageIndex(args.ref, args.session, args.fromUserId, result.text);
+      } else {
+        args.fileResults.push({
+          name: args.fileName,
+          path: args.dlPath,
+          mimeType: "image/*",
+          preprocessingError: result.error,
+        });
+      }
+      return;
+    }
+
+    const prepared = prepareImagePayload(args.dlPath, args.fileName);
+    if (!prepared.ok) {
+      args.fileResults.push({
+        name: args.fileName,
+        path: args.dlPath,
+        mimeType: "image/*",
+        preprocessingError: prepared.error,
+      });
+      return;
+    }
+    if (args.inlineImages.length >= MAX_IMAGES_PER_REQUEST) {
+      args.fileResults.push({
+        name: args.fileName,
+        path: args.dlPath,
+        mimeType: "image/*",
+        preprocessingError: `单次最多 ${MAX_IMAGES_PER_REQUEST} 张图片，此图已忽略`,
+      });
+      return;
+    }
+
+    args.inlineImages.push({
+      name: args.fileName,
+      base64: prepared.payload.base64,
+      mediaType: prepared.payload.mediaType,
+    });
+    args.pendingExtractions.push({
+      payload: prepared.payload,
+      msgId: args.ref.msgId,
+      aesKey: args.ref.aesKey,
+      convRowId: args.convRowId,
+    });
+  }
+
+  private saveImageIndex(
+    ref: { aesKey: string; msgId?: string },
+    session: { id: string; userId: number },
+    fromUserId: string,
+    text: string,
+  ): void {
+    if (!ref.msgId || !text.trim()) return;
+    this.cm.saveMessageText({
+      msgId: ref.msgId,
+      userId: session.userId,
+      sessionId: session.id,
+      fromUserId,
+      itemType: "image",
+      mediaKey: ref.aesKey || undefined,
+      textContent: text,
+    });
+  }
+
+  /**
+   * Direct mode keeps an image only inside the API call that carried it.
+   * After the reply is sent, extract its content asynchronously and persist
+   * it to the quote index and the stored conversation row, so later turns
+   * and quoted references still "see" the image.
+   */
+  private runImageMemoryWriteBack(
+    items: PendingImageExtraction[],
+    session: { id: string; userId: number },
+    fromUserId: string,
+  ): void {
+    if (items.length === 0) return;
+    const model = this.getRuntimeConfig().visionModel;
+    for (const item of items) {
+      void extractImageWithVision(item.payload, { model })
+        .then((result) => {
+          if (!result.ok) {
+            getRootLogger().warn(`image memory extraction failed: ${result.error}`);
+            return;
+          }
+          this.saveImageIndex(item, session, fromUserId, result.text);
+          this.cm.appendTextToRow(item.convRowId, result.text);
+        })
+        .catch((err) => {
+          getRootLogger().warn(`image memory extraction error: ${String(err)}`);
+        });
+    }
+  }
+
   private resolveQuotedText(
     msg: ParsedMessage,
     userId: number,
-  ): { ok: true; text?: string } | { ok: false; error: string } {
+  ): { text?: string; unresolvedLabel?: string } {
     const quoted = msg.quotedMessage;
-    if (!quoted) return { ok: true };
+    if (!quoted) return {};
 
     const indexedText = this.cm.findLatestMessageTextForUser(userId, {
       msgId: quoted.msgId,
@@ -332,8 +503,8 @@ export class Bridge {
       mediaKey: quoted.mediaKey,
       itemType: quoted.itemType,
     });
-    if (indexedText) {
-      return { ok: true, text: indexedText };
+    if (indexedText && !PLACEHOLDER_TEXTS.has(indexedText.trim())) {
+      return { text: indexedText };
     }
 
     const strictTypes = new Set(["image", "file", "voice", "video"]);
@@ -345,13 +516,14 @@ export class Bridge {
           : quoted.itemType === "voice"
             ? "语音"
             : "视频";
-      return {
-        ok: false,
-        error: `引用的${label}内容未能成功解析，无法提供给 AI。请直接重新发送原始${label}。`,
-      };
+      return { unresolvedLabel: label };
     }
 
-    return { ok: true, text: quoted.text?.trim() || undefined };
+    const summary = quoted.text?.trim();
+    if (summary && !PLACEHOLDER_TEXTS.has(summary)) {
+      return { text: summary };
+    }
+    return {};
   }
 
   private shouldAttachMedia(msg: ParsedMessage): boolean {
@@ -361,9 +533,15 @@ export class Bridge {
     return true;
   }
 
-  private buildUserText(msg: ParsedMessage, quotedText?: string): string {
+  private buildUserText(
+    msg: ParsedMessage,
+    quotedText?: string,
+    unresolvedLabel?: string,
+  ): string {
     let userText = msg.text || `[${msg.itemTypes.join(", ")} message]`;
-    if (quotedText) {
+    if (unresolvedLabel) {
+      userText = `[引用的${unresolvedLabel}内容未能解析，你看不到它的内容；请建议用户重新发送原始${unresolvedLabel}] ${userText}`;
+    } else if (quotedText) {
       userText = `[引用内容: ${quotedText}] ${userText}`;
     }
     if (msg.voiceText) {

@@ -25,15 +25,28 @@
 
 exe 已经内置 Electron/Node 运行时、项目编译后的 JavaScript、`@anthropic-ai/claude-agent-sdk`、Windows x64 的 `claude.exe`、`sql.js` 和 `qrcode`。
 
-Python 不是基础运行依赖。普通聊天、微信收发、定时任务、自动发送已有文件不需要 Python。只有当你需要图片 OCR、Office/PDF/表格等文件预处理能力，并且当前预处理实现依赖本机 Python 工具时，才需要额外安装 Python 和对应工具链。
+Python 不是基础运行依赖。普通聊天、微信收发、定时任务、自动发送已有文件、**图片理解（vision）**都不需要 Python。只有当你需要 Office/PDF/表格等文档预处理能力时，才需要额外安装 Python 和对应工具链。
 
-## PDF / 图片解析依赖
+## 图片理解（vision，无需 Python）
 
-如果你要让程序读取图片、PDF、Word、Excel、PPT 内容，需要准备 Python 预处理环境。支持范围与 `test/features/03-file-preprocessing/README.md` 一致：
+图片默认由 DeepSeek 视觉模型（`deepseek-v4-flash-vision-exp`）解析，支持 JPG/PNG/GIF/WebP（单图 15MB 以内），不需要安装任何额外环境。管理面板的"模型与图片设置"里可以切换两种模式：
+
+| 模式 | 行为 | 适用 |
+| --- | --- | --- |
+| 直连 direct（默认） | 图片直接进入主对话，AI 亲眼看图；对话模型即视觉模型 | 看图聊天、图表、截图提问 |
+| 分离 split | 图片先由视觉模型转成"描述+文字转录"文本，再交给对话模型（如 deepseek-v4-flash） | 想让日常对话用更便宜的纯文本模型 |
+
+设置保存在 `.wechat-claude\config.json`，保存后对下一条消息立即生效，无需重启。直连模式下，回复发出的同时程序会在后台异步把图片内容存成文字记录，保证后续追问和"引用这张图片"仍然可用。
+
+BMP 格式暂不支持视觉解析（会提示转换后重发）；图片解析失败不回退本地 OCR，会把原因告知 AI 和用户。
+
+## PDF / Office 文档解析依赖（可选）
+
+如果你要让程序读取 PDF、Word、Excel、PPT 内容，需要准备 Python 预处理环境（仅 markitdown，无需 PaddleOCR）：
 
 | 文件类型 | 工具 | 说明 |
 | --- | --- | --- |
-| `.png .jpg .jpeg .gif .bmp .webp` | PaddleOCR | 中文/英文 OCR |
+| `.png .jpg .jpeg .gif .webp` | DeepSeek vision（内置） | 不需要 Python |
 | `.pdf .docx .doc .xlsx .xls .pptx .ppt` | markitdown | 转 Markdown 文本 |
 | `.txt .py .js .csv .json .md .log` 等 | 内置读取 | 不需要 Python |
 
@@ -51,12 +64,11 @@ python -m venv .venv
 WECHAT_CLAUDE_PYTHON=D:\Tools\wechat-python\.venv\Scripts\python.exe
 ```
 
-新版 exe 会把 `scripts\preprocess.py` 和 `scripts\preprocess-requirements.txt` 作为运行资源带上。首次运行 PaddleOCR 可能需要下载模型，图片 OCR 会比较慢；大图可能需要 10-30 秒。
+新版 exe 会把 `scripts\preprocess.py` 和 `scripts\preprocess-requirements.txt` 作为运行资源带上。文档解析通常几秒内完成。
 
 手动验证命令：
 
 ```powershell
-.\.venv\Scripts\python .\scripts\preprocess.py --mode ocr --file .\some-image.png
 .\.venv\Scripts\python .\scripts\preprocess.py --mode markitdown --file .\some-file.pdf
 ```
 
@@ -209,7 +221,7 @@ D:\Apps\WeChat Claude\
 WeChat Claude 0.1.0.exe
 .wechat-claude\
 .env                  可选；如果你用它保存 Claude/DeepSeek 配置
-.venv\                可选；如果你需要 PDF/图片/Office 解析
+.venv\                可选；如果你需要 PDF/Office 文档解析
 ```
 
 如果只复制 exe，新电脑会创建一个全新的 `.wechat-claude/`。
@@ -236,7 +248,7 @@ WeChat Claude 0.1.0.exe
 - 想保留定时任务。
 - 想保留已有工作区文件。
 
-如果要在新电脑启用 PDF / 图片 / Office 解析，再额外准备：
+如果要在新电脑启用 PDF / Office 文档解析，再额外准备：
 
 ```text
 scripts\preprocess-requirements.txt
@@ -262,9 +274,9 @@ python -m venv .venv
 .\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
 ```
 
-## 迁移时启用 PDF / 图片解析
+## 迁移时启用 PDF / Office 文档解析
 
-如果新电脑也要支持图片 OCR、PDF、Word、Excel、PPT 解析，除了 exe、`.wechat-claude/` 和 `.env`，还要准备 Python 预处理环境。可以选下面任意一种方式。
+如果新电脑也要支持 PDF、Word、Excel、PPT 文档解析，除了 exe、`.wechat-claude/` 和 `.env`，还要准备 Python 预处理环境（仅 markitdown，体积很小）。图片解析走内置 vision，无需任何准备。可以选下面任意一种方式。
 
 ### 方式 A：新电脑在线安装
 
@@ -313,15 +325,14 @@ WECHAT_CLAUDE_PYTHON=D:\Tools\wechat-python\.venv\Scripts\python.exe
 .venv\
 ```
 
-到 exe 同目录。注意 `.venv` 通常很大，PaddleOCR 相关环境可能超过 1GB；如果源机器的 venv 绑定了不可用的 Python 路径，目标机器可能需要重新创建 venv。
+到 exe 同目录。注意如果源机器的 venv 绑定了不可用的 Python 路径，目标机器可能需要重新创建 venv；现在只需要 markitdown，无需 PaddleOCR，体积远小于从前。
 
 ### 验证解析能力
 
-准备一张图片和一个 PDF，然后运行：
+准备一个 PDF，然后运行：
 
 ```powershell
 cd "D:\Apps\WeChat Claude"
-.\.venv\Scripts\python .\scripts\preprocess.py --mode ocr --file .\test.png
 .\.venv\Scripts\python .\scripts\preprocess.py --mode markitdown --file .\test.pdf
 ```
 
@@ -331,7 +342,7 @@ cd "D:\Apps\WeChat Claude"
 {"ok": true, "text": "...", "truncated": false}
 ```
 
-如果微信里发图片/PDF 后 AI 说“Python 预处理环境未配置”或“markitdown/paddleocr 未安装”，说明当前机器还没有配置好 Python 预处理环境。
+如果微信里发 PDF 后 AI 说“Python 预处理环境未配置”或“markitdown 未安装”，说明当前机器还没有配置好 Python 预处理环境。图片解析失败的原因会单独说明（网络/格式/大小），与 Python 无关。
 
 ## 数据目录异常在 Temp 怎么办
 

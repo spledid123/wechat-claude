@@ -3,7 +3,7 @@
  * from the PromptContext provided by the bridge.
  */
 
-import type { PromptContext } from "./claude/types.js";
+import type { PromptContext, UserBlocksMessage } from "./claude/types.js";
 
 /** Magic separator for multi-bubble splitting (Feature #8 in the spec). */
 export const MULTI_BUBBLE_SEPARATOR = "<<<MSG>>>";
@@ -69,14 +69,33 @@ export function buildSystemPromptAppend(ctx: PromptContext): string {
         lines.push(`  - ${f.name} (${type})`);
       }
     }
+    const hasInlineImages = (ctx.images?.length ?? 0) > 0;
     blocks.push(
       [
         "Files received from WeChat:",
         ...lines,
         "",
-        "Do NOT try to read or process raw files (PDF, DOCX, images, etc.) yourself.",
+        hasInlineImages
+          ? "For non-image files (PDF, DOCX, XLSX, etc.) the extracted text is already"
+            + " inline in the user message; do not parse the raw binaries yourself."
+          : "Do NOT try to read or process raw files (PDF, DOCX, images, etc.) yourself.",
         "File contents are already extracted in the user message below.",
         "If a file has a ⚠️ marker, tell the user — do not attempt to fix it with Bash.",
+      ].join("\n"),
+    );
+  }
+
+  // 5b. Inline images (direct image mode)
+  if (ctx.images && ctx.images.length > 0) {
+    const lines = ctx.images.map((img) => `  - ${img.name} (attached inline as image block)`);
+    blocks.push(
+      [
+        "Images received from WeChat:",
+        ...lines,
+        "",
+        "Analyze the images directly from the attached image blocks in the user message.",
+        "Do NOT read the raw image files from disk with Read/Bash — the inline blocks"
+          + " are the authoritative copy.",
       ].join("\n"),
     );
   }
@@ -132,9 +151,32 @@ export function buildScheduledTaskInstruction(): string {
  * Includes file content inline when available.
  */
 export function buildUserMessage(ctx: PromptContext): string {
+  return buildTextPortion(ctx) || "(empty message)";
+}
+
+/**
+ * Build the multimodal user message for direct image mode: each image as an
+ * inline image block (with a text anchor), then the text portion.
+ */
+export function buildUserBlocksMessage(ctx: PromptContext): UserBlocksMessage {
+  const content: UserBlocksMessage["content"] = [];
+
+  for (const image of ctx.images ?? []) {
+    content.push({ type: "text", text: `[Image from WeChat: ${image.name}]` });
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: image.mediaType, data: image.base64 },
+    });
+  }
+
+  content.push({ type: "text", text: buildTextPortion(ctx) || "(empty message)" });
+  return { role: "user", content };
+}
+
+/** Textual portion of the user message: non-image file content + user text. */
+function buildTextPortion(ctx: PromptContext): string {
   const parts: string[] = [];
 
-  // File contents come first
   if (ctx.files) {
     for (const file of ctx.files) {
       // Voice messages: prefer transcribed text
@@ -160,7 +202,7 @@ export function buildUserMessage(ctx: PromptContext): string {
     parts.push(ctx.userText);
   }
 
-  return parts.join("\n\n") || "(empty message)";
+  return parts.join("\n\n");
 }
 
 /**
