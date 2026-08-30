@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/src/electron/main.js",
   "scripts": {
+    "setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-deps.ps1",
     "start": "tsx src/cli.ts",
     "build:app": "tsc -p tsconfig.app.json && node scripts/copy-app-assets.js",
     "electron:dev": "npm run build:app && electron .",
@@ -16,7 +17,6 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0",
-    "puppeteer-core": "^25.4.0",
     "qrcode": "^1.5.4",
     "sql.js": "^1.11.0"
   },

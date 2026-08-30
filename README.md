@@ -13,10 +13,12 @@ WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信�
 ## 快速开始
 
 ```powershell
-npm install
+npm run setup
 npm run build:app
 npm start
 ```
+
+`npm run setup` 一键安装全部依赖：Node 包（`npm install`，含打包工具链）+ Python 预处理环境（uv 管理，仅 markitdown，约 290MB；机器上没有 uv 时自动跳过并给出提示——不影响图片理解与普通聊天，仅 PDF/Office 解析不可用）。也可以只跑 `npm install` 不装 Python。
 
 启动后会打印本地管理面板地址，默认类似：
 

@@ -193,6 +193,14 @@ CLAUDE_CODE_EFFORT_LEVEL=max
 
 ## 构建命令
 
+新机器首次准备（Node + Python 依赖一键安装）：
+
+```powershell
+npm run setup
+```
+
+等价于 `npm install` + `uv venv .venv` + `uv pip install -r scripts/preprocess-requirements.txt`（无 uv 时跳过 Python 部分并提示）。脚本见 `scripts/setup-deps.ps1`。
+
 编译 app：
 
 ```powershell
