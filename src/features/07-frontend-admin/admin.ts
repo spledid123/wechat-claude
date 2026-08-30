@@ -352,6 +352,16 @@ export class AdminServer {
       return;
     }
 
+    if (method === "GET" && url.pathname === "/api/storage") {
+      this.sendJson(res, 200, { ok: true, storage: this.buildStorageInfo() });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/recent-errors") {
+      this.sendJson(res, 200, { ok: true, entries: this.readRecentLogIssues() });
+      return;
+    }
+
     const quoteDelete = url.pathname.match(/^\/api\/quote-files\/([^/]+)$/);
     if (method === "DELETE" && quoteDelete) {
       this.sendJson(res, 200, {
@@ -362,6 +372,59 @@ export class AdminServer {
     }
 
     this.sendJson(res, 404, { ok: false, error: "Not found." });
+  }
+
+  /** Data-dir footprint for the overview storage card. */
+  private buildStorageInfo(): Record<string, number> {
+    const dirSize = (p: string): number => {
+      try {
+        const stat = fs.statSync(p);
+        if (!stat.isDirectory()) return stat.size;
+        return fs.readdirSync(p).reduce((sum, name) => sum + dirSize(path.join(p, name)), 0);
+      } catch {
+        return 0;
+      }
+    };
+    const mb = (bytes: number): number => Math.round(bytes / 104857.6) / 10;
+    const rawRetention = Number.parseInt(process.env.WECHAT_CLAUDE_RETENTION_DAYS ?? "30", 10);
+
+    return {
+      totalMb: mb(dirSize(this.options.dataDir)),
+      workspacesMb: mb(dirSize(this.options.workspaceBase)),
+      logsMb: mb(dirSize(path.join(this.options.dataDir, "logs"))),
+      dbMb: mb(dirSize(this.options.bridgeDataDir)),
+      sessions: scalar("SELECT COUNT(*) AS count FROM sessions"),
+      closedSessions: scalar("SELECT COUNT(*) AS count FROM sessions WHERE status = 'closed'"),
+      quoteIndexed: scalar("SELECT COUNT(*) AS count FROM message_text_index"),
+      retentionDays: Number.isFinite(rawRetention) && rawRetention >= 0 ? rawRetention : 30,
+    };
+  }
+
+  /** Latest WARN/ERROR lines from service.log for the overview issues card. */
+  private readRecentLogIssues(): Array<{ time: string; level: string; text: string }> {
+    try {
+      const logFile = path.join(this.options.dataDir, "logs", "service.log");
+      const stat = fs.statSync(logFile);
+      const fh = fs.openSync(logFile, "r");
+      const readBytes = Math.min(stat.size, 128 * 1024);
+      const buffer = Buffer.alloc(readBytes);
+      fs.readSync(fh, buffer, 0, readBytes, Math.max(0, stat.size - readBytes));
+      fs.closeSync(fh);
+
+      return buffer
+        .toString("utf-8")
+        .split(/\r?\n/)
+        .filter((line) => /\b(ERROR|WARN)\b/.test(line))
+        .slice(-12)
+        .map((line) => {
+          const match = line.match(/^(\S+)\s+(ERROR|WARN)\s+(.*)$/);
+          return match
+            ? { time: match[1].slice(11, 19), level: match[2], text: match[3].slice(0, 160) }
+            : { time: "", level: "WARN", text: line.slice(0, 160) };
+        });
+    } catch {
+      return [];
+    }
   }
 
   /** Raw-message debug records, one jsonl per sender under logs/quote/. */
@@ -893,12 +956,22 @@ function renderAdminPage(): string {
         <div class="card"><h2>登录二维码</h2><div id="auth" class="stack muted">加载中…</div></div>
         <div class="card"><h2>运行详情</h2><div id="status" class="stack muted">加载中…</div></div>
       </div>
+      <div class="grid">
+        <div class="card"><h2>存储概览</h2><div id="storage" class="stack muted">加载中…</div></div>
+        <div class="card"><h2>最近异常</h2><div id="errors" class="stack muted">加载中…</div></div>
+      </div>
     </section>
 
     <section data-tab="conversations">
       <div class="card">
         <div class="toolbar" style="justify-content:space-between">
-          <input id="sessionSearch" placeholder="过滤：用户 / 会话ID / 摘要" style="max-width:380px">
+          <div class="toolbar">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">
+              <input type="checkbox" id="selectAll" style="width:auto"> 全选
+            </label>
+            <button class="danger" id="deleteSelected" disabled>删除选中（0）</button>
+            <input id="sessionSearch" placeholder="过滤：用户 / 会话ID / 摘要" style="max-width:280px">
+          </div>
           <span class="tiny" id="sessionCount"></span>
         </div>
         <div id="sessions" class="stack muted" style="margin-top:10px">加载中…</div>
@@ -970,7 +1043,7 @@ function renderAdminPage(): string {
 
     let activeTab = "overview";
     const loadedTabs = new Set();
-    const state = { sessions: [], open: new Map() };
+    const state = { sessions: [], open: new Map(), selected: new Set() };
 
     document.querySelectorAll("nav.tabs button").forEach((btn) => btn.addEventListener("click", () => {
       activeTab = btn.dataset.tab;
@@ -983,7 +1056,7 @@ function renderAdminPage(): string {
       if (!force && loadedTabs.has(tab)) return Promise.resolve();
       loadedTabs.add(tab);
       const jobs = {
-        overview: () => Promise.all([loadStatus(), loadAgent(), loadAuth()]),
+        overview: () => Promise.all([loadStatus(), loadAgent(), loadAuth(), loadStorage(), loadErrors()]),
         conversations: () => loadSessions(),
         tasks: () => loadTasks(),
         settings: () => Promise.all([loadSettings(), loadQuoteFiles()]),
@@ -1027,6 +1100,22 @@ function renderAdminPage(): string {
       $("agent").classList.remove("muted");
     }
 
+    async function loadStorage() {
+      const { storage } = await api("/api/storage");
+      $("storage").innerHTML = \`
+        <div>数据目录合计 <strong>\${safe(storage.totalMb)} MB</strong>（工作区 \${safe(storage.workspacesMb)} · 日志 \${safe(storage.logsMb)} · 数据库 \${safe(storage.dbMb)}）</div>
+        <div class="tiny">会话 \${safe(storage.sessions)} 个（已关闭 \${safe(storage.closedSessions)}，超 \${safe(storage.retentionDays)} 天自动清理）· 引用索引 \${safe(storage.quoteIndexed)} 条（永不清）</div>\`;
+      $("storage").classList.remove("muted");
+    }
+
+    async function loadErrors() {
+      const { entries } = await api("/api/recent-errors");
+      $("errors").innerHTML = entries.length
+        ? entries.map((e) => \`<div class="tiny" style="border-left:3px solid \${e.level === "ERROR" ? "#b94835" : "#c7892d"};padding-left:8px;margin:4px 0">\${safe(e.time)} [\${safe(e.level)}] \${safe(e.text)}</div>\`).join("")
+        : '<span class="tiny">没有异常记录 ✓</span>';
+      $("errors").classList.remove("muted");
+    }
+
     async function loadAuth() {
       const { auth } = await api("/api/auth");
       $("auth").innerHTML = \`
@@ -1059,6 +1148,7 @@ function renderAdminPage(): string {
           : \`<span class="tiny">点击"展开"查看该会话的消息</span>\`;
         return \`
           <div class="row">
+            <input type="checkbox" data-check="\${safe(s.id)}" style="width:auto;margin-top:4px" \${state.selected.has(s.id) ? "checked" : ""}>
             <div class="row-main">
               <strong>\${safe(s.fromUserId.slice(0, 22))}</strong> <span class="pill">\${safe(s.status)}</span>
               <span class="tiny">\${safe(s.messageCount)} 条 · \${clock(s.lastActiveAt)}\${s.summary ? " · " + safe(s.summary.slice(0, 30)) : ""}</span>
@@ -1071,7 +1161,52 @@ function renderAdminPage(): string {
           </div>\`;
       }).join("") : "没有匹配的会话";
       $("sessions").classList.remove("muted");
+      updateSelectionUi();
     }
+
+    function updateSelectionUi() {
+      const visible = state.sessions.filter((s) => {
+        const q = $("sessionSearch").value.trim().toLowerCase();
+        return !q || (s.fromUserId + " " + s.id + " " + (s.summary || "")).toLowerCase().includes(q);
+      });
+      const visibleSelected = visible.filter((s) => state.selected.has(s.id)).length;
+      const btn = $("deleteSelected");
+      btn.disabled = state.selected.size === 0;
+      btn.textContent = "删除选中（" + state.selected.size + "）";
+      $("selectAll").checked = visible.length > 0 && visibleSelected === visible.length;
+    }
+
+    $("selectAll").addEventListener("change", () => {
+      const q = $("sessionSearch").value.trim().toLowerCase();
+      const visible = state.sessions.filter((s) =>
+        !q || (s.fromUserId + " " + s.id + " " + (s.summary || "")).toLowerCase().includes(q));
+      if ($("selectAll").checked) {
+        visible.forEach((s) => state.selected.add(s.id));
+      } else {
+        visible.forEach((s) => state.selected.delete(s.id));
+      }
+      renderSessions();
+    });
+
+    $("sessions").addEventListener("change", (event) => {
+      const id = event.target?.dataset?.check;
+      if (!id) return;
+      if (event.target.checked) state.selected.add(id);
+      else state.selected.delete(id);
+      updateSelectionUi();
+    });
+
+    $("deleteSelected").addEventListener("click", async () => {
+      const ids = [...state.selected];
+      if (!ids.length) return;
+      if (!confirm("删除选中的 " + ids.length + " 个会话及其工作目录？不可恢复。")) return;
+      for (const id of ids) {
+        await api("/api/sessions/" + encodeURIComponent(id), { method: "DELETE" }).catch(() => undefined);
+        state.selected.delete(id);
+        state.open.delete(id);
+      }
+      await loadSessions().catch(alert);
+    });
 
     async function toggleSession(id) {
       if (state.open.has(id)) { state.open.delete(id); renderSessions(); return; }
