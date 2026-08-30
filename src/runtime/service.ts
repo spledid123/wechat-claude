@@ -13,7 +13,6 @@ import { MessageOrchestrator } from "../features/05-message-orchestration/orches
 import { SchedulerEngine } from "../features/06-scheduler/scheduler.js";
 import { createAdminServer, type AdminServer } from "../features/07-frontend-admin/admin.js";
 import { startPolling, type ParsedMessage } from "../features/02-wechat-connectivity/wechat/poller.js";
-import { getConfig } from "../features/02-wechat-connectivity/wechat/api.js";
 import {
   createWechatSendAttachment,
   createWechatSendText,
@@ -69,7 +68,6 @@ export class WechatClaudeService {
   private orchestrator: MessageOrchestrator | null = null;
   private scheduler: SchedulerEngine | null = null;
   private schedulerTimer: NodeJS.Timeout | null = null;
-  private keepAliveTimer: NodeJS.Timeout | null = null;
   private servicePromise: Promise<void> | null = null;
   private stopPromise: Promise<void> | null = null;
 
@@ -226,20 +224,11 @@ export class WechatClaudeService {
         });
       }, this.schedulerTickMs);
 
-      // Keep-alive heartbeat: the iLink token goes stale on inactivity. Issue a
-      // cheap authenticated call on an interval to generate activity and try to
-      // keep the token warm. Best-effort — if it fails, the poller's reactive
-      // recovery still restores the connection on the next inbound message.
-      // Disable by setting WECHAT_KEEPALIVE_MS=0.
-      const keepAliveMs = readKeepAliveIntervalMs();
-      if (keepAliveMs > 0) {
-        this.keepAliveTimer = setInterval(() => {
-          void getConfig(botToken)
-            .then(() => this.logger.debug("keep-alive ping ok"))
-            .catch((err) => this.logger.warn(`keep-alive ping failed: ${(err as Error).message}`));
-        }, keepAliveMs);
-        this.logger.info(`Keep-alive heartbeat every ${Math.round(keepAliveMs / 1000)}s`);
-      }
+      // No separate keep-alive heartbeat: the long poll itself is a
+      // continuous authenticated call (~every 30s, and at most a 30s backoff
+      // on errors), which keeps the iLink token far warmer than a periodic
+      // ping ever could. Token staleness is still handled reactively by the
+      // poller's stale→live recovery.
 
       this.state = "running";
       this.logger.info("Listening for WeChat messages.");
@@ -315,10 +304,6 @@ export class WechatClaudeService {
       clearInterval(this.schedulerTimer);
       this.schedulerTimer = null;
     }
-    if (this.keepAliveTimer) {
-      clearInterval(this.keepAliveTimer);
-      this.keepAliveTimer = null;
-    }
     await this.adminServer?.close().catch(() => undefined);
     this.adminServer = null;
     await this.orchestrator?.flushAll().catch((err) => this.logger.error("Flush error:", err));
@@ -348,15 +333,6 @@ function readPortFromEnv(defaultPort: number): number {
   if (!raw) return defaultPort;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) ? parsed : defaultPort;
-}
-
-/** Keep-alive heartbeat interval in ms. Default 4 min; set 0 to disable. */
-function readKeepAliveIntervalMs(): number {
-  const raw = process.env.WECHAT_KEEPALIVE_MS;
-  if (raw === undefined) return 4 * 60 * 1000;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) return 4 * 60 * 1000;
-  return parsed;
 }
 
 function waitForAbort(signal: AbortSignal): Promise<void> {
