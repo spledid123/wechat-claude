@@ -1,362 +1,171 @@
-# 项目架构、功能、依赖与打包
+# 项目架构与维护指南
 
-本文档面向维护者，说明 WeChat Claude 的正式实现结构、核心功能、运行数据、依赖和打包流程。
+本文档面向维护者，说明 WeChat Claude 的实现结构、各模块职责、数据与配置体系、运行时治理和构建验证流程。使用者和打包细节见 [用户手册](user-exe-guide.md) 与 [打包说明](packaging.md)，微信协议细节见 [微信 iLink Bot API 实战文档](wechat-ilink-api.md)。
 
 ## 一、总体架构
 
 ```text
-WeChat iLink Bot API
+微信 iLink Bot API（长轮询）
         |
         v
-src/features/02-wechat-connectivity/wechat/
+src/features/02-wechat-connectivity/   轮询、收发、CDN 媒体、加密
         |
         v
-src/features/05-message-orchestration/
+src/features/05-message-orchestration/ 去抖合并、正在输入、多气泡
         |
         v
-src/features/04-bridge/
+src/features/04-bridge/                桥接：引用解析、图片双模式路由、出站文件
         |
         v
-src/features/01-claude-dialogue/
+src/features/01-claude-dialogue/       Agent 会话、权限、SQLite、prompt
+        |               ^
+        v               | 图片提取（直连 HTTP）
+src/features/03-file-preprocessing/  vision.ts + markitdown/文本预处理
         |
         v
-Claude Agent SDK
+Claude Agent SDK（内置 claude CLI）── DeepSeek Anthropic 兼容端点
 ```
 
-正式服务入口：
+入口：
 
 ```text
-src/runtime/service.ts
+src/runtime/service.ts   正式服务（组装根）
+src/cli.ts               CLI 入口
+src/electron/main.ts     Electron 托盘入口
 ```
 
-Electron 托盘入口：
-
-```text
-src/electron/main.ts
-```
-
-CLI 入口：
-
-```text
-src/cli.ts
-```
+后端模型通过 Anthropic 兼容端点接 DeepSeek（`ANTHROPIC_BASE_URL`），模型选择在 `config.json`（见四）。
 
 ## 二、主要目录
 
 ```text
-src/features/01-claude-dialogue/       Claude 会话、权限、数据库、会话记录
+src/features/01-claude-dialogue/       Agent 会话、权限、数据库、prompt 构建
 src/features/02-wechat-connectivity/   微信 API、轮询、发送、上传、加密
-src/features/03-file-preprocessing/    图片 OCR、文档/表格/文本抽取
-src/features/04-bridge/                微信消息到 Claude 的桥接逻辑、自动发送文件
-src/features/05-message-orchestration/ 消息防抖合并、正在输入状态、多气泡回复
+src/features/03-file-preprocessing/    vision 图片解析 + 文档/文本预处理
+src/features/04-bridge/                桥接逻辑、引用、自动发送文件
+src/features/05-message-orchestration/ 消息去抖合并（可配置）、正在输入
 src/features/06-scheduler/             一次性/每天/每周定时任务
-src/features/07-frontend-admin/        本地管理后台
-src/runtime/                           正式服务生命周期、日志、路径、微信发送包装
-src/electron/                          托盘菜单、状态窗口、portable 路径修复
-scripts/                               构建、启动、打包辅助脚本
+src/features/07-frontend-admin/        本地管理面板（四标签）
+src/runtime/                           服务生命周期、配置、日志、存储清理、路径
+src/electron/                          托盘菜单、portable 路径修复
+scripts/                               setup/启动/打包脚本、preprocess.py、vision-test
 docs/                                  文档
-test/                                  回归测试与历史分阶段文档
 ```
 
-`test/` 被保留，但正式运行时不依赖 `test/features`。生产构建只编译 `src/**/*.ts`。
+## 三、核心模块职责
 
-## 三、核心功能
+### 3.1 微信连接（02）
+长轮询接收、文本/图片/文件/语音发送、CDN 上传下载与 AES 解密。**所有 id 处理注意 JSON 大数陷阱**（见微信 API 文档）：`message_id`/`msg_id` 15 位以上数字在解析前转字符串，入站索引、引用查询、出站 msg_id 三边统一用服务端 id。
 
-### 3.1 微信连接
+### 3.2 图片理解（03 + 04，双模式）
+- **直连 direct（默认）**：图片以 image block 内联进主对话（`session.querySimple` 接受 `string | blocks`），对话模型即视觉模型；回复后**异步**提取图片内容写入引用索引和对话记录（多轮记忆回写）。
+- **分离 split**：图片先由 `vision.ts` 直连视觉模型提取"描述+转录"文本，注入对话模型上下文。
+- 门槛：魔数嗅探真实格式（不信任扩展名）、单图 ≤15MB、单请求 ≤10 张；失败报错不回退。
+- PDF/Office 走 markitdown（可选 Python 环境），文本文件内置读取；**OCR 已移除**。
 
-模块：
+### 3.3 引用机制（04 + 01）
+`message_text_index` 按**用户全局**存储每条消息的解析文本（跨对话可查）。引用解析两级：服务端 msg_id 精确匹配 → 失败注入"未能解析"提示（**不吞消息**）。agent 发出的图片发送后异步提取入库，同样可被引用。
 
-```text
-src/features/02-wechat-connectivity/wechat/
-```
+### 3.4 Agent 会话（01）
+每微信会话一个工作区；对话记忆 = 注入最近 6 条历史（每条截 500 字），SDK 每次独立查询（无 resume）。会话对象轻量、模型可热切换（config 变化即重建）、闲置 1 小时淘汰。权限：写入限工作区，Bash 写意图拦截（Windows 无 OS 沙箱）。
 
-接口参数、消息结构、CDN 加密和踩坑记录见 [微信 iLink Bot API 实战文档](wechat-ilink-api.md)。
+### 3.5 消息编排（05）
+去抖合并窗口可配置（见四）：文本/媒体窗口 + 最大累计上限，来新消息重置计时；命令立即处理；`<<<MSG>>>` 多气泡拆分（≤4 条）。
 
-能力：
+### 3.6 定时任务（06）
+once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用户微信确认；错过的任务在服务启动时补跑。
 
-- 获取登录二维码。
-- 轮询二维码扫码状态。
-- 保存 `bot_token.txt`。
-- 长轮询接收微信消息。
-- 发送文字、图片、文件。
-- 处理上传签名和加密字段。
+### 3.7 管理面板（07）
+四标签：概览（指标/AI 后端状态卡含 token 用量/存储概览/最近异常，5 秒局部刷新）、对话（会话摘要+懒加载消息+**多选批量删除**）、任务、设置（模式/模型/去抖+报文记录管理）。API：`/api/status|auth|settings|agent-status|storage|recent-errors|conversations|sessions/:id/messages|quote-files` 等。
 
-### 3.2 Claude 对话
+### 3.8 Electron（electron）
+托盘常驻、打开面板/数据目录/日志、重启、退出；portable 数据目录用 `PORTABLE_EXECUTABLE_DIR`。
 
-模块：
+## 四、配置体系
 
-```text
-src/features/01-claude-dialogue/
-```
+**`.env`（密钥与端点）**：`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`。读取顺序：系统环境变量 → exe 旁 `.env` → 数据目录 `.env`。
 
-能力：
+**`.wechat-claude/config.json`（行为配置，面板可改，即时生效）**：
 
-- 每个微信会话对应一个 Claude 工作区。
-- 会话记录写入 SQLite。
-- 历史上下文注入 prompt。
-- 支持 `/new`、`/list`、`/switch`。
-- 限制 Claude 写入范围：只能写当前 session 工作区，外部目录只读。
-- 禁止 Claude 使用交互确认类工具，尽量保证任务自动完成。
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| imageMode | direct | direct=图片内联主对话；split=先转文字 |
+| visionModel | deepseek-v4-flash-vision-exp | 视觉模型（direct 下兼作对话模型） |
+| conversationModel | deepseek-v4-flash | split 模式的对话模型 |
+| debounceTextMs | 3000 | 文本去抖窗口（ms） |
+| debounceMediaMs | 5000 | 媒体去抖窗口 |
+| debounceMaxMs | 15000 | 批次累计上限 |
 
-### 3.3 文件与引用
+**其他环境变量**：`WECHAT_CLAUDE_DATA_DIR`（数据目录）、`WECHAT_CLAUDE_RETENTION_DAYS`（存储保留期，默认 30，0 关闭）、`WECHAT_CLAUDE_LOG_MAX_MB`（日志轮转，默认 5）、`WECHAT_CLAUDE_VISION_TIMEOUT_MS`（提取超时，默认 90s）、`WECHAT_CLAUDE_PYTHON` / `WECHAT_CLAUDE_PREPROCESS_*`（文档解析）、`CLAUDE_SDK_EVENT_LOG=1` / `CLAUDE_PERMISSION_LOG=1`（诊断转储，默认关）。
 
-模块：
-
-```text
-src/features/03-file-preprocessing/
-src/features/04-bridge/
-```
-
-能力：
-
-- 语音优先使用微信转写文本。
-- 图片、文件先预处理成文本，再给 AI。
-- 引用图片/文件/语音时，使用历史索引中的文本内容。
-- 若引用媒体无法解析，不降级给 AI，而是直接向微信返回失败说明。
-
-PDF/图片/Office 预处理依赖正式资源 `scripts/preprocess.py`。图片使用 PaddleOCR，PDF/Office 使用 markitdown；目标机器需要单独准备 Python `.venv` 或通过 `WECHAT_CLAUDE_PYTHON` 指定 Python。普通聊天和微信收发不需要 Python。
-
-### 3.4 消息编排
-
-模块：
-
-```text
-src/features/05-message-orchestration/
-```
-
-能力：
-
-- 短时间内多条微信消息防抖合并。
-- 媒体消息使用更长防抖窗口。
-- `/tasks`、`确认`、`取消` 等命令不进防抖，立即处理。
-- 支持 `<<<MSG>>>` 多气泡拆分。
-- 支持“正在输入”状态指示；如果微信接口没有 typing ticket，则自动禁用。
-
-### 3.5 定时任务
-
-模块：
-
-```text
-src/features/06-scheduler/
-```
-
-能力：
-
-- 一次性任务：某天几点执行一次。
-- 每天任务：每天固定时间执行。
-- 每周任务：每周固定星期几和时间执行。
-- 直接发微信文本。
-- 触发 Agent，再把 Agent 回复发回微信。
-- AI 创建任务必须返回严格 JSON，软件生成草稿，用户确认后才创建。
-- 支持 `/tasks` 列出和 `/task-del` 删除。
-
-AI JSON 示例：
-
-```json
-{
-  "wechat_schedule_task": {
-    "title": "每日新闻",
-    "mode": "agent_prompt",
-    "payloadText": "帮我找今天的新闻",
-    "schedule": {
-      "type": "daily",
-      "timeOfDay": "08:30"
-    }
-  }
-}
-```
-
-### 3.6 本地管理后台
-
-模块：
-
-```text
-src/features/07-frontend-admin/admin.ts
-```
-
-能力：
-
-- 查看运行状态、PID、时区、本地时间。
-- 查看 token、二维码、数据目录、数据库路径、工作区路径。
-- 列出全部历史对话。
-- 删除会话并清理工作区。
-- 列出、创建、删除定时任务。
-- 刷新二维码并保存 token。
-
-### 3.7 Electron 托盘
-
-模块：
-
-```text
-src/electron/
-```
-
-能力：
-
-- 后台启动正式 service。
-- 系统托盘菜单。
-- 打开管理面板。
-- 打开数据目录和日志文件。
-- 重启服务。
-- 退出程序。
-- portable exe 数据目录修复：优先使用 `PORTABLE_EXECUTABLE_DIR`。
-
-## 四、数据目录
-
-正式默认数据目录：
-
-```text
-<程序所在目录>\.wechat-claude\
-```
-
-目录内容：
+## 五、数据目录与数据库
 
 ```text
 .wechat-claude/
-├── bot_token.txt
+├── bot_token.txt            微信登录 token（明文）
 ├── wechat-qr.png
-├── bridge-data/
-│   └── relay.sqlite
-├── logs/
-│   ├── service.log
-│   └── quote-listener.jsonl
-└── workspaces/
-    └── session-xxxx/
-        ├── incoming/
-        ├── working/
-        │   └── output_weixin/
-        └── output/
+├── config.json              行为配置（见四）
+├── bridge-data/relay.sqlite
+└── logs/
+    ├── service.log(.1)      按大小轮转
+    └── quote/<发送者>.jsonl  每条消息完整原始报文（面板可删）
+└── workspaces/session-xxxxxxxx/
+    ├── incoming/            收到的媒体解密原件
+    ├── working/output_weixin/  待发/已发文件（.sent.json 去重）
+    └── output/
 ```
 
-说明：
+数据库（sql.js，全库驻内存 + 30 秒快照写盘）：`users / sessions / conversations / message_text_index（永不清） / turns（7 天） / scheduled_tasks(_drafts)`。迁移在 `src/features/01-claude-dialogue/db/migrations/`（001–004）。
 
-- `bot_token.txt` 是微信登录 token。
-- `relay.sqlite` 保存会话、消息、定时任务、草稿等数据。
-- `workspaces/` 是 Claude 每个会话的工作区。
-- `working/output_weixin/` 中的新文件会自动发回微信。
+**存储治理**：启动时自动清理——turns 留 7 天、关闭会话及工作区目录留 30 天、孤儿目录清扫；数据目录整体搬迁后会话路径自动重映射。
 
-## 五、数据库
-
-数据库使用 `sql.js`，运行时是 SQLite 文件：
-
-```text
-.wechat-claude/bridge-data/relay.sqlite
-```
-
-迁移文件：
-
-```text
-src/features/01-claude-dialogue/db/migrations/
-```
-
-当前迁移：
-
-- `001_initial.sql`：用户、会话、消息、引用索引、turns。
-- `002_message_text_index.sql`：文件名和媒体 key 索引。
-- `003_scheduled_tasks.sql`：定时任务和草稿。
-- `004_daily_scheduled_tasks.sql`：新增每天任务类型。
+**注意**：Claude CLI 自身会在 `~\.claude\projects\` 留完整问答记录，不受本项目清理管辖。
 
 ## 六、依赖
 
-运行依赖：
+npm 运行依赖：`@anthropic-ai/claude-agent-sdk`（含 win32-x64 CLI 二进制 ~218MB）、`sql.js`、`qrcode`。开发依赖：`typescript`、`tsx`、`electron`、`electron-builder`、`@types/*`。
 
-- `@anthropic-ai/claude-agent-sdk`：Claude Agent SDK。
-- `sql.js`：SQLite WASM。
-- `qrcode`：二维码图片生成。
+Python（可选，仅文档解析）：uv 管理，`markitdown[all]`，约 290MB。
 
-开发/打包依赖：
-
-- `typescript`：TypeScript 编译。
-- `tsx`：开发时运行 TypeScript。
-- `vitest`：测试。
-- `electron`：桌面托盘程序。
-- `electron-builder`：Windows 打包。
-- `@types/node`、`@types/sql.js`：类型声明。
-
-用户运行 exe 时不需要安装 Node.js 或 npm；但 Claude Agent SDK 的认证/可用性仍依赖本机环境和网络。正式运行时会读取系统环境变量、程序目录 `.env` 和数据目录 `.wechat-claude/.env`，不把密钥打进 exe，也不要求迁移开发目录里的 `.claude/`。
-
-## 七、构建与打包
-
-编译正式 app：
+## 七、环境准备与构建
 
 ```powershell
-npm run build:app
+npm run setup          # 新机一键：npm install + uv venv + markitdown
+npm run build:app      # 编译（最低验证门槛）
+npm start              # CLI 运行；托盘：npm run electron:dev
+npm run dist:win:zip   # 运行版 zip（exe，~187MB）
+npm run dist:src:zip   # 源码转移 zip（git 跟踪文件，~200KB）
 ```
 
-开发模式启动 Electron：
+## 八、验证
 
-```powershell
-npm run electron:dev
-```
+没有自动化测试套件（已移除），按以下顺序人工验证：
 
-生成单文件 portable exe：
+1. `npm run build:app` 编译通过
+2. `npx tsx scripts/vision-test.ts 图片路径 [--extract|--direct]`——离线格式检查 / 视觉提取 / 端到端 blocks
+3. `npm start` 冒烟：面板可开、四标签正常、无 token 时扫码流程可用
+4. 真机验收清单：普通对话、发图（直连+分离各一）、引用已发图片（跨对话）、定时任务、自动发文件
 
-```powershell
-npm run dist:win
-```
+## 九、启动 / 停止 / 无 token
 
-生成目录版：
-
-```powershell
-npm run dist:win:dir
-```
-
-生成 zip：
-
-```powershell
-npm run dist:win:zip
-```
-
-打包配置在 `package.json` 的 `build` 字段中。构建输出目录是：
-
-```text
-release/
-```
-
-该目录是生成物，不提交到 git。
-
-## 八、测试策略
-
-完整测试：
-
-```powershell
-npm test
-```
-
-类型检查：
-
-```powershell
-npx tsc --noEmit
-```
-
-正式 runtime 重点测试：
-
-```powershell
-npm test -- test/runtime/service.test.ts test/runtime/electron-main.test.ts
-```
-
-说明：
-
-- `test/` 保留历史分阶段测试和回归测试。
-- 正式代码已经迁移到 `src/features/`。
-- 如果修改了正式实现，建议同步更新对应测试，避免 `src/features` 和 `test/features` 行为漂移。
-
-## 九、发布前检查
-
-建议顺序：
-
-1. `npm install`
-2. `npm test`
-3. `npx tsc --noEmit`
-4. `npm run build:app`
-5. `npm run dist:win`
-6. 启动 exe，确认数据目录在 exe 旁边的 `.wechat-claude/`
-7. 打开管理面板，扫码登录
-8. 微信实测普通消息、文件、引用、定时任务、自动发送文件
+- CLI：`npm start` 或 `start-wechat-claude.cmd`（包装 start-service.ps1）
+- 停止：Ctrl+C 一次优雅退出，二次强制
+- 无 token：服务不退出，进入 `waiting_for_login`，面板扫码保存 token 后重启
+- service 对外 API：`start() / stop() / waitUntilStopped() / getStatus()`（Electron 直接复用）
 
 ## 十、已知限制
 
-- 当前没有自定义应用图标，使用 Electron 默认图标。
-- 当前没有代码签名，Windows 可能提示未知发布者。
-- npm audit 可能提示 Electron/builder 生态依赖风险，正式公开发布前应单独处理。
-- 测试目录和正式目录目前存在一份历史重复实现，后续可逐步把测试改为直接覆盖 `src/features`，再删除 `test/features` 中的重复源码。
+- 无自定义图标、无代码签名（SmartScreen 会提示未知发布者）
+- Windows 下 agent 无 OS 沙箱，靠权限层限制（写入限工作区、Bash 写意图拦截）
+- 对话记忆仅注入最近 6 条文本（未用 SDK resume）；直连模式图片追问依赖异步提取的文本
+- 并发=1：一批消息处理期间其他请求排队
+- npm audit 对 Electron/builder 生态的提示未处理
+
+## 文档索引
+
+| 文档 | 内容 |
+| --- | --- |
+| README.md | 项目入口与交接提示 |
+| docs/user-exe-guide.md | 使用者手册（exe 运行、面板、迁移、排障） |
+| docs/packaging.md | 打包、依赖、运行时配置与维护 |
+| docs/wechat-ilink-api.md | 微信协议实战与踩坑（含大数陷阱） |
