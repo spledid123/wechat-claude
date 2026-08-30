@@ -54,8 +54,9 @@ BMP 格式暂不支持视觉解析（会提示转换后重发）；图片解析�
 
 ```powershell
 cd "D:\Apps\WeChat Claude"
-python -m venv .venv
-.\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
+uv venv .venv
+uv pip install -r .\scripts\preprocess-requirements.txt --python .\.venv\Scripts\python.exe
+# 没有 uv 时退回传统方式：python -m venv .venv 然后 .\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
 ```
 
 如果你不想把 `.venv` 放在 exe 同目录，也可以在 `.env` 中指定 Python：
@@ -273,8 +274,9 @@ WeChat Claude\
 
 ```powershell
 cd "D:\Apps\WeChat Claude"
-python -m venv .venv
-.\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
+uv venv .venv
+uv pip install -r .\scripts\preprocess-requirements.txt --python .\.venv\Scripts\python.exe
+# 没有 uv 时退回传统方式：python -m venv .venv 然后 .\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
 ```
 
 ## 迁移时启用 PDF / Office 文档解析
@@ -287,8 +289,9 @@ python -m venv .venv
 
 ```powershell
 cd "D:\Apps\WeChat Claude"
-python -m venv .venv
-.\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
+uv venv .venv
+uv pip install -r .\scripts\preprocess-requirements.txt --python .\.venv\Scripts\python.exe
+# 没有 uv 时退回传统方式：python -m venv .venv 然后 .\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
 ```
 
 目录最后应类似：
@@ -310,6 +313,7 @@ D:\Apps\WeChat Claude\
 
 ```powershell
 D:\Tools\wechat-python\.venv\Scripts\pip install -r "D:\Apps\WeChat Claude\scripts\preprocess-requirements.txt"
+# 或用 uv：uv pip install -r "D:\Apps\WeChat Claude\scripts\preprocess-requirements.txt" --python D:\Tools\wechat-python\.venv\Scripts\python.exe
 ```
 
 然后在 exe 同目录 `.env` 里加入：

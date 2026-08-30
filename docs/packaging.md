@@ -89,8 +89,9 @@ scripts/preprocess-requirements.txt
 目标机器如果需要 PDF/图片解析，推荐在 exe 同目录准备：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
+uv venv .venv
+uv pip install -r .\scripts\preprocess-requirements.txt --python .\.venv\Scripts\python.exe
+# 没有 uv 时退回传统方式：python -m venv .venv 然后 .\.venv\Scripts\pip install -r .\scripts\preprocess-requirements.txt
 ```
 
 也可以通过环境变量或 `.env` 指定其他 Python：
@@ -115,7 +116,7 @@ npx tsx scripts\vision-test.ts .\some-image.png --direct   端到端：blocks �
 | --- | --- | --- |
 | 全新普通使用 | exe + 可选 `.env` | 不需要历史数据，不需要 PDF/图片解析 |
 | 迁移旧数据 | exe + 可选 `.env` + 旧 `.wechat-claude/` | 保留 token、历史、定时任务、工作区 |
-| 在线安装解析能力 | exe + 可选 `.env` + `scripts/preprocess-requirements.txt`，目标机运行 `python -m venv .venv` 和 `pip install -r scripts/preprocess-requirements.txt` | 目标机可联网，最稳 |
+| 在线安装解析能力 | exe + 可选 `.env` + `scripts/preprocess-requirements.txt`，目标机运行 `uv venv .venv` 和 `uv pip install -r scripts/preprocess-requirements.txt --python .venv/Scripts/python.exe`（无 uv 时退回 python -m venv + pip） | 目标机可联网，最稳 |
 | 指定已有 Python | exe + `.env`，在 `.env` 里设置 `WECHAT_CLAUDE_PYTHON` | 目标机已有统一 Python 环境 |
 | 离线拷贝 `.venv` | exe + `.venv/` + `.env` + `.wechat-claude/` | 离线机器；体积大，兼容性需实测 |
 
