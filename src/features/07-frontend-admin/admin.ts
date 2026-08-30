@@ -21,7 +21,7 @@ import type {
   QrCodeResponse,
   QrCodeStatusResponse,
 } from "../02-wechat-connectivity/wechat/types.js";
-import { readConfig, writeConfig, type RuntimeConfig } from "../../runtime/config.js";
+import { readConfig, writeConfig, applyAnthropicEnvOverrides, type RuntimeConfig } from "../../runtime/config.js";
 import type { AgentStatusSnapshot } from "../01-claude-dialogue/claude/manager.js";
 
 export interface AdminAuthProvider {
@@ -117,6 +117,18 @@ const DEFAULT_PORT = 8787;
 
 function nonEmptyOr(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+/** For secrets: absent/empty input keeps the stored value (may be undefined). */
+function keepSecretOr(value: unknown, fallback: string | undefined): string | undefined {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed || fallback;
+}
+
+/** Masked tail of a secret for display, e.g. "…d930". Empty when unset. */
+function tail(secret: string | undefined): string {
+  if (!secret) return "";
+  return "…" + secret.slice(-4);
 }
 
 function boundedInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -307,7 +319,24 @@ export class AdminServer {
     }
 
     if (method === "GET" && url.pathname === "/api/settings") {
-      this.sendJson(res, 200, { ok: true, settings: readConfig(this.options.dataDir) });
+      const config = readConfig(this.options.dataDir);
+      this.sendJson(res, 200, {
+        ok: true,
+        settings: {
+          imageMode: config.imageMode,
+          visionModel: config.visionModel,
+          conversationModel: config.conversationModel,
+          debounceTextMs: config.debounceTextMs,
+          debounceMediaMs: config.debounceMediaMs,
+          debounceMaxMs: config.debounceMaxMs,
+          // Secrets are never echoed back — only masked tails.
+          anthropic: {
+            baseUrl: config.anthropicBaseUrl ?? process.env.ANTHROPIC_BASE_URL ?? "",
+            apiKeyTail: tail(config.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY),
+            authTokenTail: tail(config.anthropicAuthToken ?? process.env.ANTHROPIC_AUTH_TOKEN),
+          },
+        },
+      });
       return;
     }
 
@@ -321,9 +350,15 @@ export class AdminServer {
         debounceTextMs: boundedInt(body.debounceTextMs, current.debounceTextMs, 200, 600_000),
         debounceMediaMs: boundedInt(body.debounceMediaMs, current.debounceMediaMs, 200, 600_000),
         debounceMaxMs: boundedInt(body.debounceMaxMs, current.debounceMaxMs, 1_000, 1_800_000),
+        // Absent/empty means "keep the stored value" — the panel never sees secrets.
+        anthropicBaseUrl: keepSecretOr(body.anthropicBaseUrl, current.anthropicBaseUrl),
+        anthropicApiKey: keepSecretOr(body.anthropicApiKey, current.anthropicApiKey),
+        anthropicAuthToken: keepSecretOr(body.anthropicAuthToken, current.anthropicAuthToken),
       };
       writeConfig(this.options.dataDir, next);
-      this.sendJson(res, 200, { ok: true, settings: next });
+      // API overrides take effect immediately (vision HTTP + SDK subprocess env).
+      applyAnthropicEnvOverrides(next);
+      this.sendJson(res, 200, { ok: true });
       return;
     }
 
@@ -1013,7 +1048,13 @@ function renderAdminPage(): string {
             <label>媒体合并窗口（毫秒）<input name="debounceMediaMs" type="number" min="200" max="600000" step="100" placeholder="5000"></label>
             <label>最大累计上限（毫秒）<input name="debounceMaxMs" type="number" min="1000" max="1800000" step="500" placeholder="15000"></label>
           </div>
+          <div class="grid2">
+            <label>API Base URL<input name="anthropicBaseUrl" placeholder="https://api.deepseek.com/anthropic"></label>
+            <label>API Key（x-api-key）<input name="anthropicApiKey" type="password" autocomplete="off" placeholder="留空保持不变"></label>
+            <label>Auth Token（Bearer）<input name="anthropicAuthToken" type="password" autocomplete="off" placeholder="留空保持不变"></label>
+          </div>
           <div class="tiny">窗口：消息发出后等待合并的时间，来新消息会重新计时；上限：一批消息累计多久后强制发送。对下一条消息生效，无需重启。</div>
+          <div class="tiny">API 接入：保存在本机 config.json，优先于 .env，保存后立即生效。密钥不回显，仅显示末 4 位。</div>
           <button type="submit">保存设置</button>
         </form>
       </div>
@@ -1250,6 +1291,11 @@ function renderAdminPage(): string {
       form.elements.debounceTextMs.value = settings.debounceTextMs;
       form.elements.debounceMediaMs.value = settings.debounceMediaMs;
       form.elements.debounceMaxMs.value = settings.debounceMaxMs;
+      form.elements.anthropicBaseUrl.value = settings.anthropic.baseUrl || "";
+      form.elements.anthropicApiKey.placeholder = settings.anthropic.apiKeyTail
+        ? "已配置 " + settings.anthropic.apiKeyTail + "，留空保持不变" : "未配置，留空保持不变";
+      form.elements.anthropicAuthToken.placeholder = settings.anthropic.authTokenTail
+        ? "已配置 " + settings.anthropic.authTokenTail + "，留空保持不变" : "未配置，留空保持不变";
     }
 
     async function loadQuoteFiles() {
@@ -1309,6 +1355,9 @@ function renderAdminPage(): string {
           debounceTextMs: Number(form.get("debounceTextMs")),
           debounceMediaMs: Number(form.get("debounceMediaMs")),
           debounceMaxMs: Number(form.get("debounceMaxMs")),
+          anthropicBaseUrl: form.get("anthropicBaseUrl") || undefined,
+          anthropicApiKey: form.get("anthropicApiKey") || undefined,
+          anthropicAuthToken: form.get("anthropicAuthToken") || undefined,
         }),
       });
       await loadSettings();

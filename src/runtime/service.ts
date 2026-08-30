@@ -20,7 +20,7 @@ import {
 } from "./wechat-runtime.js";
 import { buildRuntimePaths, type RuntimePaths } from "./paths.js";
 import { createRuntimeLogger, setRootLogger, setDiagnosticsDir, type RuntimeLogger } from "./logger.js";
-import { readConfig } from "./config.js";
+import { readConfig, applyAnthropicEnvOverrides } from "./config.js";
 import { appendQuoteDebugRecord, quoteFilePathForUser } from "./quote-debug.js";
 import { runStartupStorageCleanup } from "./storage-cleanup.js";
 
@@ -130,6 +130,9 @@ export class WechatClaudeService {
     try {
       await initializeDatabase(this.paths.bridgeDataDir);
       startAutoSave(this.autoSaveIntervalMs);
+
+      // config.json's API overrides (if any) take effect over .env values.
+      applyAnthropicEnvOverrides(readConfig(this.paths.dataDir));
 
       const cleanup = runStartupStorageCleanup(this.paths.workspaceBase);
       if (cleanup.turnsDeleted > 0 || cleanup.closedSessionsDeleted > 0 || cleanup.workspacesRemoved > 0) {

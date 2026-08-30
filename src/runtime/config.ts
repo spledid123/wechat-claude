@@ -23,6 +23,12 @@ export interface RuntimeConfig {
   debounceMediaMs: number;
   /** Hard cap on total batch accumulation before a forced flush (ms). */
   debounceMaxMs: number;
+  /** Optional API endpoint override (Anthropic-compatible). */
+  anthropicBaseUrl?: string;
+  /** Optional API key override (x-api-key). Secret — never returned to the panel. */
+  anthropicApiKey?: string;
+  /** Optional auth token override (Bearer). Secret — never returned to the panel. */
+  anthropicAuthToken?: string;
 }
 
 export const DEFAULT_CONFIG: RuntimeConfig = {
@@ -70,6 +76,9 @@ export function readConfig(dataDir: string): RuntimeConfig {
       debounceTextMs: positiveIntOr(raw.debounceTextMs, DEFAULT_CONFIG.debounceTextMs),
       debounceMediaMs: positiveIntOr(raw.debounceMediaMs, DEFAULT_CONFIG.debounceMediaMs),
       debounceMaxMs: positiveIntOr(raw.debounceMaxMs, DEFAULT_CONFIG.debounceMaxMs),
+      anthropicBaseUrl: nonEmptyStringOrNone(raw.anthropicBaseUrl),
+      anthropicApiKey: nonEmptyStringOrNone(raw.anthropicApiKey),
+      anthropicAuthToken: nonEmptyStringOrNone(raw.anthropicAuthToken),
     };
   } catch {
     // Corrupt or partially written file — fall back to defaults.
@@ -101,4 +110,19 @@ function positiveIntOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.round(value)
     : fallback;
+}
+
+function nonEmptyStringOrNone(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * Apply config.json's API overrides onto process.env so every consumer
+ * (vision direct HTTP calls, the SDK subprocess env) picks them up without
+ * a restart. Called at service start and after the admin panel saves.
+ */
+export function applyAnthropicEnvOverrides(config: RuntimeConfig): void {
+  if (config.anthropicBaseUrl) process.env.ANTHROPIC_BASE_URL = config.anthropicBaseUrl;
+  if (config.anthropicApiKey) process.env.ANTHROPIC_API_KEY = config.anthropicApiKey;
+  if (config.anthropicAuthToken) process.env.ANTHROPIC_AUTH_TOKEN = config.anthropicAuthToken;
 }

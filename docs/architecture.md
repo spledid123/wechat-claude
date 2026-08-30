@@ -95,6 +95,9 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 | debounceTextMs | 3000 | 文本去抖窗口（ms） |
 | debounceMediaMs | 5000 | 媒体去抖窗口 |
 | debounceMaxMs | 15000 | 批次累计上限 |
+| anthropicBaseUrl / anthropicApiKey / anthropicAuthToken | 未设置 | API 接入覆盖（面板"设置"页可填），**优先于 .env**，保存即生效；密钥不回显，仅显示末 4 位，留空保持不变 |
+
+`.env` 密钥（`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`）作为底层默认：系统环境变量 → exe 旁 `.env` → 数据目录 `.env`；上表字段再覆盖其上。服务启动与面板保存时统一应用到运行时（vision 直连与 SDK 子进程环境同步生效）。
 
 **其他环境变量**：`WECHAT_CLAUDE_DATA_DIR`（数据目录）、`WECHAT_CLAUDE_RETENTION_DAYS`（存储保留期，默认 30，0 关闭）、`WECHAT_CLAUDE_LOG_MAX_MB`（日志轮转，默认 5）、`WECHAT_CLAUDE_VISION_TIMEOUT_MS`（提取超时，默认 90s）、`WECHAT_CLAUDE_PYTHON` / `WECHAT_CLAUDE_PREPROCESS_*`（文档解析）、`CLAUDE_SDK_EVENT_LOG=1` / `CLAUDE_PERMISSION_LOG=1`（诊断转储，默认关）。
 
