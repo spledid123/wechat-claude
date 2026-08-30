@@ -1,4 +1,4 @@
-# 打包源码 zip（用于转移到另一台电脑继续开发）。
+﻿# 打包源码 zip（用于转移到另一台电脑继续开发）。
 #
 # 用 git archive 只打包 git 跟踪的文件：源码、脚本、文档、配置，
 # 自动排除 node_modules、.venv、.wechat-claude（数据/微信 token）、
