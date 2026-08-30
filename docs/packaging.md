@@ -11,8 +11,11 @@ release/
 ├── WeChat Claude 0.1.0.exe
 ├── win-unpacked/
 │   └── WeChat Claude.exe
-└── WeChat-Claude-win-unpacked.zip
+├── WeChat-Claude-win-unpacked.zip      ← 运行版（exe，给使用者）
+└── WeChat-Claude-source.zip            ← 源码版（给开发机转移）
 ```
+
+源码 zip 用 `npm run dist:src:zip` 生成：基于 `git archive`，只含 git 跟踪的源码/脚本/文档/配置，自动排除 node_modules、.venv、.wechat-claude（数据/微信 token）、.env（密钥）等。**只包含已提交的内容，打包前先 commit。** 新机器解压后 `npm run setup` 装依赖，再按需放入 `.env` 和 `.wechat-claude\`。
 
 单文件 portable：
 
