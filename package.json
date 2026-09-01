@@ -48,6 +48,10 @@
       {
         "from": "scripts/preprocess-requirements.txt",
         "to": "scripts/preprocess-requirements.txt"
+      },
+      {
+        "from": "skills",
+        "to": "skills"
       }
     ],
     "asar": true,

@@ -7,6 +7,10 @@ import type { SessionManager } from "../01-claude-dialogue/session/manager.js";
 import type { ConversationManager } from "../01-claude-dialogue/conversation/manager.js";
 import type { PromptContext, SessionSpec } from "../01-claude-dialogue/claude/types.js";
 import { FilePreprocessor } from "../03-file-preprocessing/preprocessor.js";
+import type {
+  PreprocessResult,
+  RenderPdfPagesResult,
+} from "../03-file-preprocessing/preprocessor.js";
 import {
   prepareImagePayload,
   extractImageFileWithVision,
@@ -24,6 +28,12 @@ import path from "node:path";
 
 /** DeepSeek accepts many more; this keeps single requests lean. */
 const MAX_IMAGES_PER_REQUEST = 10;
+
+/** Scanned-PDF vision fallback: never transcribe more than this many pages. */
+const SCANNED_PDF_PAGE_CAP = 20;
+
+/** Below this many extracted characters per page, a PDF counts as scanned. */
+const SCANNED_PDF_MIN_CHARS_PER_PAGE = 100;
 
 /** Indexed/stored placeholders that carry no real content — treat as unresolved. */
 const PLACEHOLDER_TEXTS = new Set(["[图片]", "[语音]", "[视频]", "[文件]", "[混合消息]"]);
@@ -180,9 +190,28 @@ export class Bridge {
         }
 
         const result = await this.pp.process(dlPath);
-        const extractedText = ref.itemType === "voice" && input.msg.voiceText
-          ? undefined
-          : result.extractedText ?? undefined;
+
+        let extractedText: string | undefined;
+        let preprocessingError: string | undefined = result.error ?? undefined;
+        let truncated = result.truncated;
+        let scannedNotice: string | undefined;
+
+        if (this.looksScannedPdf(fileName, result)) {
+          const fallback = await this.runScannedPdfExtraction(dlPath, session.cwd);
+          if (fallback.text) {
+            extractedText = fallback.text;
+            truncated = fallback.truncated;
+            scannedNotice = fallback.notice;
+            preprocessingError = undefined;
+          } else {
+            scannedNotice = fallback.notice;
+            preprocessingError = `扫描版 PDF 视觉识别失败: ${fallback.error ?? "未知错误"}`;
+          }
+        } else {
+          extractedText = ref.itemType === "voice" && input.msg.voiceText
+            ? undefined
+            : result.extractedText ?? undefined;
+        }
         const transcribedText = ref.itemType === "voice"
           ? input.msg.voiceText
           : undefined;
@@ -193,7 +222,9 @@ export class Bridge {
           extractedText,
           transcribedText,
           mimeType: result.mimeType,
-          preprocessingError: result.error ?? undefined,
+          preprocessingError,
+          truncated,
+          scannedNotice,
         });
 
         const indexedText = transcribedText ?? extractedText;
@@ -211,6 +242,10 @@ export class Bridge {
         }
       }
     }
+
+    // Aggregate budget across all files in this batch: later files lose their
+    // inline text first (the model can still Read them from disk by path).
+    this.applyBatchCharBudget(fileResults, this.getRuntimeConfig().preprocessBatchMaxChars);
 
     const historyText = this.cm.getContextMessages(session.id, 6);
     const summary = this.sm.getLastClosedSessionSummary();
@@ -367,6 +402,123 @@ export class Bridge {
 
   private getRuntimeConfig(): RuntimeConfig {
     return this.getConfig?.() ?? DEFAULT_CONFIG;
+  }
+
+  /** A PDF whose text layer is empty or near-empty — vision fallback applies. */
+  private looksScannedPdf(fileName: string, result: PreprocessResult): boolean {
+    if (!fileName.toLowerCase().endsWith(".pdf")) return false;
+    const pages = result.pdfPages ?? 0;
+    if (pages <= 0) return false;
+    if (result.error) return true;
+    return (result.charsPerPage ?? Number.POSITIVE_INFINITY) < SCANNED_PDF_MIN_CHARS_PER_PAGE;
+  }
+
+  /**
+   * Scanned-PDF fallback: render pages to PNG with PyMuPDF, transcribe each
+   * through the existing vision pipeline, and stitch the per-page transcripts.
+   */
+  private async runScannedPdfExtraction(
+    pdfPath: string,
+    workspaceRoot: string,
+  ): Promise<{ text?: string; notice?: string; error?: string; truncated?: boolean }> {
+    const outDir = path.join(workspaceRoot, "working", "pdf_pages");
+    const render = await this.pp.renderPdfPages(pdfPath, outDir, {
+      start: 1,
+      maxPages: SCANNED_PDF_PAGE_CAP,
+    });
+    if (!render.ok) {
+      return { error: render.error ?? "PDF 页面渲染失败" };
+    }
+
+    const model = this.getRuntimeConfig().visionModel;
+    const parts: string[] = [];
+    for (let i = 0; i < render.pagePaths.length; i++) {
+      const pageNumber = render.start + i;
+      const pagePath = render.pagePaths[i];
+      const extracted = await extractImageFileWithVision(
+        pagePath,
+        path.basename(pagePath),
+        { model },
+      );
+      parts.push(`[第${pageNumber}页]\n${extracted.ok ? extracted.text : `(识别失败: ${extracted.error})`}`);
+    }
+
+    const text = parts.join("\n\n").trim();
+    if (!text) {
+      return { error: "所有页面均识别失败" };
+    }
+
+    return {
+      text,
+      truncated: render.rendered < render.total,
+      notice: this.buildScannedNotice(pdfPath, workspaceRoot, render),
+    };
+  }
+
+  /** Tell the model what was recognized and how to read more pages itself. */
+  private buildScannedNotice(
+    pdfPath: string,
+    workspaceRoot: string,
+    render: RenderPdfPagesResult,
+  ): string {
+    const rel = (p: string) => path.relative(workspaceRoot, p).split(path.sep).join("/");
+    const lastPage = render.start + render.rendered - 1;
+    const lines = [
+      `该 PDF 为扫描版（无文本层），已用视觉识别转录第 ${render.start}-${lastPage} 页（共 ${render.total} 页）。`,
+    ];
+
+    const nextPage = lastPage + 1;
+    if (nextPage <= render.total) {
+      const python = this.pp.getPythonPath();
+      const command = python
+        ? `"${python}" tools/preprocess.py --mode pdf-pages --file ${rel(pdfPath)} `
+          + `--start ${nextPage} --max-pages ${render.total - nextPage + 1} --out-dir working/pdf_pages`
+        : "（Python 环境未配置，无法续读剩余页面）";
+      lines.push(
+        `如需其余页面，先运行: ${command}`,
+        "渲染出的 PNG 位于 working/pdf_pages/，之后逐页用 Read 工具查看即可（需对话模型具备视觉能力）。",
+      );
+    } else {
+      lines.push("全部页面均已转录；如需重看某页，直接用 Read 打开 working/pdf_pages/ 下对应的 PNG。");
+    }
+    if (this.getRuntimeConfig().imageMode === "split") {
+      lines.push("注意：当前为分离模式，对话模型无视觉能力，Read PNG 无效；如需按页查看请在管理面板切换为直连模式。");
+    }
+    return lines.join("\n");
+  }
+
+  /** Enforce the aggregate character budget across all files in one batch. */
+  private applyBatchCharBudget(
+    files: NonNullable<PromptContext["files"]>,
+    budget: number,
+  ): void {
+    let used = 0;
+    for (const file of files) {
+      const len = (file.extractedText?.length ?? 0) + (file.transcribedText?.length ?? 0);
+      if (len === 0) continue;
+
+      const remaining = budget - used;
+      if (remaining <= 0) {
+        file.extractedText = undefined;
+        file.truncated = true;
+        continue;
+      }
+      if (len <= remaining) {
+        used += len;
+        continue;
+      }
+
+      // Voice transcripts are kept first; the file text takes what is left.
+      const voiceLen = file.transcribedText?.length ?? 0;
+      if (voiceLen > remaining) {
+        file.transcribedText = file.transcribedText?.slice(0, remaining);
+        file.extractedText = undefined;
+      } else if (file.extractedText) {
+        file.extractedText = file.extractedText.slice(0, Math.max(remaining - voiceLen, 0));
+      }
+      file.truncated = true;
+      used = budget;
+    }
   }
 
   /**

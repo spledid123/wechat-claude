@@ -62,6 +62,8 @@ docs/                                  文档
 - **分离 split**：图片先由 `vision.ts` 直连视觉模型提取"描述+转录"文本，注入对话模型上下文。
 - 门槛：魔数嗅探真实格式（不信任扩展名）、单图 ≤15MB、单请求 ≤10 张；失败报错不回退。
 - PDF/Office 走 markitdown（可选 Python 环境），文本文件内置读取；**OCR 已移除**。
+- **扫描版 PDF 视觉回退**：markitdown 对 PDF 附带页数统计（PyMuPDF），每页提取文字 <100 字符即判定扫描版——自动渲染前 20 页 PNG（`working/pdf_pages/`），逐页走既有 vision 转录并按 `[第N页]` 拼接；提示词附带续读命令（工作区内 `tools/preprocess.py` + venv python），AI 可自行渲染并 Read 剩余页面（直连模式）。旧版 `.doc/.xls/.ppt` 直接提示转存。
+- **文档生成参考资料**：会话工作区初始化时把仓库 `skills/`（minimax-xlsx / pptx-generator / docx，纯文件约 1MB）和 `scripts/preprocess.py`（→ `tools/`）复制进工作区。不走 SDK 的 skills 机制——AI 用已放行的 Read/Bash 直接使用；生成物写入 `working/output_weixin/` 即自动发回。
 
 ### 3.3 引用机制（04 + 01）
 `message_text_index` 按**用户全局**存储每条消息的解析文本（跨对话可查）。引用解析两级：服务端 msg_id 精确匹配 → 失败注入"未能解析"提示（**不吞消息**）。agent 发出的图片发送后异步提取入库，同样可被引用。
@@ -95,6 +97,8 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 | debounceTextMs | 3000 | 文本去抖窗口（ms） |
 | debounceMediaMs | 5000 | 媒体去抖窗口 |
 | debounceMaxMs | 15000 | 批次累计上限 |
+| preprocessMaxChars | 50000 | 单文件提取文本上限（字符），超出截断并告知 AI 路径自行续读 |
+| preprocessBatchMaxChars | 150000 | 单批附件提取总量上限（字符），后续文件只留路径 |
 | anthropicBaseUrl / anthropicApiKey / anthropicAuthToken | 未设置 | API 接入覆盖（面板"设置"页可填），**优先于 .env**，保存即生效；密钥不回显，仅显示末 4 位，留空保持不变 |
 
 `.env` 密钥（`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`）作为底层默认：系统环境变量 → exe 旁 `.env` → 数据目录 `.env`；上表字段再覆盖其上。服务启动与面板保存时统一应用到运行时（vision 直连与 SDK 子进程环境同步生效）。
@@ -114,6 +118,9 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
     └── quote/<发送者>.jsonl  每条消息完整原始报文（面板可删）
 └── workspaces/session-xxxxxxxx/
     ├── incoming/            收到的媒体解密原件
+    ├── skills/              文档生成参考技能（会话创建时从仓库 skills/ 复制）
+    ├── tools/preprocess.py  PDF 续读渲染工具（权限层要求脚本在工作区内）
+    ├── working/pdf_pages/   扫描版 PDF 渲染的页面 PNG
     ├── working/output_weixin/  待发/已发文件（.sent.json 去重）
     └── output/
 ```
@@ -128,7 +135,9 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 
 npm 运行依赖：`@anthropic-ai/claude-agent-sdk`（含 win32-x64 CLI 二进制 ~218MB）、`sql.js`、`qrcode`。开发依赖：`typescript`、`tsx`、`electron`、`electron-builder`、`@types/*`。
 
-Python（可选，仅文档解析）：uv 管理，`markitdown[all]`，约 290MB。
+Python（可选，仅文档解析）：uv 管理，`markitdown[all]` + `pymupdf`（页数统计与扫描版 PDF 渲染；AGPL-3.0，自用无碍，二次分发需自查合规），约 300MB。
+
+仓库 `skills/`（git 跟踪，约 1MB）：minimax-xlsx、pptx-generator、docx 三个文档生成参考技能，会话创建时复制进各工作区，随工作区清理自动回收。
 
 ## 七、环境准备与构建
 

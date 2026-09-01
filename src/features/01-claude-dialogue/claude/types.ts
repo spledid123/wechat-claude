@@ -118,6 +118,10 @@ export interface PromptContext {
     mimeType?: string;
     /** If preprocessing failed, the error description. */
     preprocessingError?: string;
+    /** Extracted text was cut by the per-file or batch character cap. */
+    truncated?: boolean;
+    /** Scanned-PDF notice: what was vision-recognized and how to read more. */
+    scannedNotice?: string;
   }>;
   /** Images inlined as content blocks (direct image mode). */
   images?: Array<{

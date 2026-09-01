@@ -42,13 +42,17 @@ BMP 格式暂不支持视觉解析（会提示转换后重发）；图片解析�
 
 ## PDF / Office 文档解析依赖（可选）
 
-如果你要让程序读取 PDF、Word、Excel、PPT 内容，需要准备 Python 预处理环境（仅 markitdown，无需 PaddleOCR）：
+如果你要让程序读取 PDF、Word、Excel、PPT 内容，需要准备 Python 预处理环境（markitdown + pymupdf，无需 PaddleOCR）：
 
 | 文件类型 | 工具 | 说明 |
 | --- | --- | --- |
 | `.png .jpg .jpeg .gif .webp` | DeepSeek vision（内置） | 不需要 Python |
-| `.pdf .docx .doc .xlsx .xls .pptx .ppt` | markitdown | 转 Markdown 文本 |
+| `.pdf .docx .xlsx .pptx` | markitdown + pymupdf | 转 Markdown 文本；扫描版 PDF 自动逐页视觉识别（上限 20 页） |
+| `.epub .msg .zip` | markitdown | 电子书 / Outlook 邮件 / 压缩包内容 |
+| `.doc .xls .ppt` | 不支持 | 旧版二进制格式，请另存为 `.docx/.xlsx/.pptx` 或 PDF 后重发 |
 | `.txt .py .js .csv .json .md .log` 等 | 内置读取 | 不需要 Python |
+
+单个文件提取超过上限（默认 5 万字符，面板"设置"可调）会截断，AI 会拿到完整文件路径、可自行继续读取；一批消息的附件总量也有独立上限（默认 15 万字符）。
 
 推荐在 exe 同目录创建 `.venv`：
 
@@ -78,6 +82,14 @@ WECHAT_CLAUDE_PYTHON=D:\Tools\wechat-python\.venv\Scripts\python.exe
 ```json
 {"ok": true, "text": "提取到的文字...", "truncated": false}
 ```
+
+对 PDF 会额外返回页数信息（`pages`、`chars_per_page`），每页文字量异常少时程序判定为扫描版，自动用 PyMuPDF 渲染成图片再逐页走视觉识别。渲染也可以手动调用：
+
+```powershell
+.\.venv\Scripts\python .\scripts\preprocess.py --mode pdf-pages --file .\scan.pdf --out-dir .\pages --start 1 --max-pages 20
+```
+
+> PyMuPDF 采用 AGPL-3.0 许可。本程序自用不分发修改后的 PyMuPDF 本身；若你二次分发打包产物，请自行确认许可合规。
 
 ## Claude / DeepSeek 配置
 

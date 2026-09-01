@@ -62,11 +62,11 @@ export function buildSystemPromptAppend(ctx: PromptContext): string {
       const type = f.mimeType ?? "unknown";
       if (f.preprocessingError) {
         lines.push(`  - ${f.name} (${type}) — ⚠️ ${f.preprocessingError}`);
-      } else if (f.extractedText) {
-        const chars = f.extractedText.length;
-        lines.push(`  - ${f.name} (${type}) — text extracted, ${chars} chars`);
+      } else if (f.extractedText !== undefined || f.transcribedText !== undefined) {
+        const chars = (f.extractedText?.length ?? 0) + (f.transcribedText?.length ?? 0);
+        lines.push(`  - ${f.name} (${type}) — text extracted, ${chars} chars${f.truncated ? "，已截断" : ""}`);
       } else {
-        lines.push(`  - ${f.name} (${type})`);
+        lines.push(`  - ${f.name} (${type})${f.path ? ` — on disk at ${f.path}` : ""}`);
       }
     }
     const hasInlineImages = (ctx.images?.length ?? 0) > 0;
@@ -80,6 +80,8 @@ export function buildSystemPromptAppend(ctx: PromptContext): string {
             + " inline in the user message; do not parse the raw binaries yourself."
           : "Do NOT try to read or process raw files (PDF, DOCX, images, etc.) yourself.",
         "File contents are already extracted in the user message below.",
+        "Exception: PNG pages rendered under working/pdf_pages/ may be Read directly",
+        "when you need to look at more pages of a scanned PDF.",
         "If a file has a ⚠️ marker, tell the user — do not attempt to fix it with Bash.",
       ].join("\n"),
     );
@@ -94,11 +96,15 @@ export function buildSystemPromptAppend(ctx: PromptContext): string {
         ...lines,
         "",
         "Analyze the images directly from the attached image blocks in the user message.",
-        "Do NOT read the raw image files from disk with Read/Bash — the inline blocks"
-          + " are the authoritative copy.",
+        "Do NOT re-read the user's original image files from disk — the inline blocks",
+        "are the authoritative copy. Rendered PDF pages under working/pdf_pages/ are",
+        "the exception: Read those directly when you need more pages of a scanned PDF.",
       ].join("\n"),
     );
   }
+
+  // 5c. Bundled document-generation references (plain files, no skill tooling)
+  blocks.push(buildDocumentSkillsInstruction());
 
   // 6. Recent conversation history
   if (ctx.historyText) {
@@ -191,19 +197,28 @@ function buildTextPortion(ctx: PromptContext): string {
 
   if (ctx.files) {
     for (const file of ctx.files) {
+      const truncationNote = file.truncated
+        ? `\n[注意：内容超长已截断，完整文件在 ${file.path}，可用 Read 工具继续读取剩余部分]`
+        : "";
+      const scannedNote = file.scannedNotice ? `${file.scannedNotice}\n` : "";
+
       // Voice messages: prefer transcribed text
       if (file.transcribedText) {
         parts.push(
-          `[Voice message: ${file.name}]\nTranscription: ${file.transcribedText}`,
+          `[Voice message: ${file.name}]\nTranscription: ${file.transcribedText}${truncationNote}`,
         );
       } else if (file.extractedText) {
         parts.push(
-          `[File: ${file.name}]\nContent:\n${file.extractedText}`,
+          `[File: ${file.name}] (完整文件位于工作区: ${file.path})\n`
+            + `${scannedNote}Content:\n${file.extractedText}${truncationNote}`,
         );
       } else {
+        const droppedNote = file.truncated
+          ? "\n[注意：本条消息附件总量超长，此文件内容未内联；请用 Read 工具按需读取。]"
+          : "";
         parts.push(
-          `[File received: ${file.name} (${file.mimeType ?? "unknown type"})]\n` +
-            `The file is available at: ${file.path}`,
+          `[File received: ${file.name} (${file.mimeType ?? "unknown type"})]\n`
+            + `${scannedNote}The file is available at: ${file.path}${droppedNote}`,
         );
       }
     }
@@ -215,6 +230,25 @@ function buildTextPortion(ctx: PromptContext): string {
   }
 
   return parts.join("\n\n");
+}
+
+/**
+ * Static pointer to the bundled generation references in the workspace.
+ * They are plain files — no Skill tooling involved, just Read + Bash.
+ */
+export function buildDocumentSkillsInstruction(): string {
+  return [
+    "DOCUMENT GENERATION REFERENCES:",
+    "The workspace skills/ directory bundles reference skills for generating",
+    "Excel (skills/minimax-xlsx), PowerPoint (skills/pptx-generator) and Word",
+    "(skills/docx) files — each has a SKILL.md plus helper scripts, and",
+    "tools/preprocess.py is available for PDF page rendering.",
+    "When the user asks you to create or edit such a document, first Read the",
+    "matching SKILL.md and follow its guidance. Install any needed node/python",
+    "packages inside the workspace (e.g. npm install pptxgenjs).",
+    "Save the finished file into working/output_weixin/ — the bridge sends",
+    "everything placed there back to the WeChat user automatically.",
+  ].join("\n");
 }
 
 /**

@@ -20,6 +20,10 @@ export interface PreprocessResult {
   error: string | null;
   /** Whether the extracted text was truncated. */
   truncated?: boolean;
+  /** Total PDF page count, when PyMuPDF could open the file. */
+  pdfPages?: number;
+  /** Extracted characters per PDF page — thin values flag a scanned PDF. */
+  charsPerPage?: number;
 }
 
 export interface FilePreprocessorOptions {
@@ -28,13 +32,22 @@ export interface FilePreprocessorOptions {
   pythonPath?: string;
   preprocessScript?: string;
   timeoutMs?: number;
+  /** Live per-file character cap; the same value is passed to the Python side. */
+  getMaxChars?: () => number;
 }
 
 type ProcessMode = "markitdown" | "text" | "unsupported";
 
 const MARKITDOWN_EXTENSIONS = new Set([
-  ".pdf", ".docx", ".doc", ".xlsx", ".xls", ".pptx", ".ppt",
+  ".pdf", ".docx", ".xlsx", ".pptx",
+  ".epub", ".msg", ".zip",
 ]);
+
+/** Legacy binary Office formats — markitdown's extractors are OOXML-only. */
+const LEGACY_OFFICE_EXTENSIONS = new Set([".doc", ".xls", ".ppt"]);
+
+const LEGACY_OFFICE_ERROR =
+  "旧版 Office 格式暂不支持，请用 Office/WPS 另存为 .docx/.xlsx/.pptx 或导出为 PDF 后重发";
 
 const TEXT_EXTENSIONS = new Set([
   ".txt", ".m", ".py", ".js", ".ts", ".json", ".csv",
@@ -51,6 +64,9 @@ const MIME_MAP: Record<string, string> = {
   ".xls": "application/vnd.ms-excel",
   ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".ppt": "application/vnd.ms-powerpoint",
+  ".epub": "application/epub+zip",
+  ".msg": "application/vnd.ms-outlook",
+  ".zip": "application/zip",
 };
 
 interface PythonResult {
@@ -58,6 +74,21 @@ interface PythonResult {
   text?: string;
   error?: string;
   truncated?: boolean;
+  /** markitdown: total PDF page count; pdf-pages: rendered page file paths. */
+  pages?: number | string[];
+  chars_per_page?: number;
+  total?: number;
+  rendered?: number;
+  start?: number;
+}
+
+export interface RenderPdfPagesResult {
+  ok: boolean;
+  total: number;
+  start: number;
+  rendered: number;
+  pagePaths: string[];
+  error?: string;
 }
 
 export class FilePreprocessor {
@@ -66,6 +97,7 @@ export class FilePreprocessor {
   private readonly pythonPath?: string;
   private readonly preprocessScript?: string;
   private readonly timeoutMs: number;
+  private readonly getMaxChars?: () => number;
 
   constructor(options: FilePreprocessorOptions = {}) {
     this.appRoot = path.resolve(options.appRoot ?? process.cwd());
@@ -73,6 +105,17 @@ export class FilePreprocessor {
     this.timeoutMs = options.timeoutMs ?? readNumberEnv("WECHAT_CLAUDE_PREPROCESS_TIMEOUT_MS", 60_000);
     this.pythonPath = options.pythonPath ?? findPythonPath(this.appRoot, this.dataDir);
     this.preprocessScript = options.preprocessScript ?? findPreprocessScript(this.appRoot);
+    this.getMaxChars = options.getMaxChars;
+  }
+
+  /** Current per-file character cap (config-driven, hot-reloadable). */
+  maxChars(): number {
+    return this.getMaxChars?.() ?? 50_000;
+  }
+
+  /** Interpreter the workspace tools/preprocess.py copy should be run with. */
+  getPythonPath(): string | undefined {
+    return this.pythonPath;
   }
 
   /**
@@ -88,8 +131,18 @@ export class FilePreprocessor {
       };
     }
 
-    const mode = detectMode(filePath);
+    const ext = path.extname(filePath).toLowerCase();
     const mimeType = getMimeType(filePath);
+
+    if (LEGACY_OFFICE_EXTENSIONS.has(ext)) {
+      return {
+        extractedText: null,
+        mimeType,
+        error: LEGACY_OFFICE_ERROR,
+      };
+    }
+
+    const mode = detectMode(filePath);
 
     if (mode === "unsupported") {
       return {
@@ -100,15 +153,17 @@ export class FilePreprocessor {
     }
 
     if (mode === "text") {
-      return readTextFile(filePath, mimeType);
+      return readTextFile(filePath, mimeType, this.maxChars());
     }
 
-    const result = await this.runPython(mode, filePath);
+    const result = await this.runPython("markitdown", filePath);
     return {
       extractedText: result.ok ? (result.text ?? null) : null,
       mimeType,
       error: result.ok ? null : (result.error ?? "未知预处理错误"),
       truncated: result.truncated,
+      pdfPages: typeof result.pages === "number" ? result.pages : undefined,
+      charsPerPage: typeof result.chars_per_page === "number" ? result.chars_per_page : undefined,
     };
   }
 
@@ -116,7 +171,48 @@ export class FilePreprocessor {
     return Promise.all(filePaths.map((fp) => this.process(fp)));
   }
 
+  /**
+   * Render PDF pages to PNGs for the scanned-PDF vision fallback
+   * (and for the agent's own continuation reads via the Read tool).
+   */
+  async renderPdfPages(
+    filePath: string,
+    outDir: string,
+    options: { start?: number; maxPages?: number } = {},
+  ): Promise<RenderPdfPagesResult> {
+    const fallback: RenderPdfPagesResult = {
+      ok: false, total: 0, start: options.start ?? 1, rendered: 0, pagePaths: [],
+    };
+    if (!fs.existsSync(filePath)) {
+      return { ...fallback, error: "文件不存在" };
+    }
+
+    const result = await this.runPythonArgs([
+      "--mode", "pdf-pages",
+      "--file", filePath,
+      "--out-dir", outDir,
+      "--start", String(options.start ?? 1),
+      "--max-pages", String(options.maxPages ?? 20),
+    ]);
+
+    if (!result.ok || !Array.isArray(result.pages)) {
+      return { ...fallback, error: result.error ?? "PDF 渲染失败" };
+    }
+
+    return {
+      ok: true,
+      total: result.total ?? result.pages.length,
+      start: result.start ?? (options.start ?? 1),
+      rendered: result.rendered ?? result.pages.length,
+      pagePaths: result.pages.map(String),
+    };
+  }
+
   private runPython(mode: "markitdown", filePath: string): Promise<PythonResult> {
+    return this.runPythonArgs(["--mode", mode, "--file", filePath]);
+  }
+
+  private runPythonArgs(args: string[]): Promise<PythonResult> {
     return new Promise((resolve) => {
       if (!this.preprocessScript || !fs.existsSync(this.preprocessScript)) {
         resolve({
@@ -136,14 +232,14 @@ export class FilePreprocessor {
 
       const proc = spawn(this.pythonPath, [
         this.preprocessScript,
-        "--mode", mode,
-        "--file", filePath,
+        ...args,
       ], {
         timeout: this.timeoutMs,
         windowsHide: true,
         env: {
           ...process.env,
           PYTHONIOENCODING: "utf-8",
+          WECHAT_CLAUDE_PREPROCESS_MAX_CHARS: String(this.maxChars()),
         },
       });
 
@@ -191,14 +287,14 @@ function getMimeType(filePath: string): string {
   return MIME_MAP[ext] ?? "application/octet-stream";
 }
 
-function readTextFile(filePath: string, mimeType: string): PreprocessResult {
+function readTextFile(filePath: string, mimeType: string, maxChars: number): PreprocessResult {
   try {
     for (const enc of ["utf-8", "gbk", "latin1"] as BufferEncoding[]) {
       const text = fs.readFileSync(filePath, enc);
       if (text.trim()) {
-        const truncated = text.length > 50_000;
+        const truncated = text.length > maxChars;
         return {
-          extractedText: text.slice(0, 50_000),
+          extractedText: text.slice(0, maxChars),
           mimeType,
           error: null,
           truncated,

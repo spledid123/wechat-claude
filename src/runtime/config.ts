@@ -23,6 +23,10 @@ export interface RuntimeConfig {
   debounceMediaMs: number;
   /** Hard cap on total batch accumulation before a forced flush (ms). */
   debounceMaxMs: number;
+  /** Per-file cap on extracted document text (chars). */
+  preprocessMaxChars: number;
+  /** Aggregate cap on extracted text across all files in one message batch. */
+  preprocessBatchMaxChars: number;
   /** Optional API endpoint override (Anthropic-compatible). */
   anthropicBaseUrl?: string;
   /** Optional API key override (x-api-key). Secret — never returned to the panel. */
@@ -39,6 +43,8 @@ export const DEFAULT_CONFIG: RuntimeConfig = {
   debounceTextMs: readPositiveIntEnv("WECHAT_CLAUDE_TEXT_DEBOUNCE_MS", 3000),
   debounceMediaMs: readPositiveIntEnv("WECHAT_CLAUDE_MEDIA_DEBOUNCE_MS", 5000),
   debounceMaxMs: readPositiveIntEnv("WECHAT_CLAUDE_MAX_DEBOUNCE_MS", 15000),
+  preprocessMaxChars: 50_000,
+  preprocessBatchMaxChars: 150_000,
 };
 
 export function configFilePath(dataDir: string): string {
@@ -76,6 +82,11 @@ export function readConfig(dataDir: string): RuntimeConfig {
       debounceTextMs: positiveIntOr(raw.debounceTextMs, DEFAULT_CONFIG.debounceTextMs),
       debounceMediaMs: positiveIntOr(raw.debounceMediaMs, DEFAULT_CONFIG.debounceMediaMs),
       debounceMaxMs: positiveIntOr(raw.debounceMaxMs, DEFAULT_CONFIG.debounceMaxMs),
+      preprocessMaxChars: positiveIntOr(raw.preprocessMaxChars, DEFAULT_CONFIG.preprocessMaxChars),
+      preprocessBatchMaxChars: positiveIntOr(
+        raw.preprocessBatchMaxChars,
+        DEFAULT_CONFIG.preprocessBatchMaxChars,
+      ),
       anthropicBaseUrl: nonEmptyStringOrNone(raw.anthropicBaseUrl),
       anthropicApiKey: nonEmptyStringOrNone(raw.anthropicApiKey),
       anthropicAuthToken: nonEmptyStringOrNone(raw.anthropicAuthToken),

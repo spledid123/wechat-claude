@@ -31,10 +31,12 @@ export interface SessionRecord {
 export class SessionManager {
   private readonly workspaceBase: string;
   private readonly sessionTimeoutMinutes: number;
+  private readonly appRoot: string;
 
-  constructor(workspaceBase: string, sessionTimeoutMinutes = 60) {
+  constructor(workspaceBase: string, sessionTimeoutMinutes = 60, appRoot?: string) {
     this.workspaceBase = workspaceBase;
     this.sessionTimeoutMinutes = sessionTimeoutMinutes;
+    this.appRoot = path.resolve(appRoot ?? process.cwd());
   }
 
   // ==================== session lifecycle ====================
@@ -87,6 +89,51 @@ export class SessionManager {
     ]) {
       fs.mkdirSync(path.join(workspaceDir, subdir), { recursive: true });
     }
+    this.seedWorkspaceAssets(workspaceDir);
+  }
+
+  /**
+   * Copy the bundled agent-side assets into the workspace:
+   *   skills/  — document-generation reference skills (plain files, read via Read)
+   *   tools/   — preprocess.py, so the agent can render more scanned-PDF pages
+   *              itself (the permission layer only runs workspace-local scripts).
+   * Idempotent: skips anything already present, so existing sessions are cheap.
+   */
+  private seedWorkspaceAssets(workspaceDir: string): void {
+    const skillsDest = path.join(workspaceDir, "skills");
+    if (!fs.existsSync(skillsDest)) {
+      const skillsSrc = this.findBundledAsset("skills");
+      if (skillsSrc) {
+        try {
+          fs.cpSync(skillsSrc, skillsDest, { recursive: true });
+        } catch {
+          /* skills are optional — a failed copy must not break the session */
+        }
+      }
+    }
+
+    const toolDest = path.join(workspaceDir, "tools", "preprocess.py");
+    if (!fs.existsSync(toolDest)) {
+      const scriptSrc = this.findBundledAsset(path.join("scripts", "preprocess.py"));
+      if (scriptSrc) {
+        try {
+          fs.mkdirSync(path.dirname(toolDest), { recursive: true });
+          fs.copyFileSync(scriptSrc, toolDest);
+        } catch {
+          /* continuation reads degrade, but core preprocessing is unaffected */
+        }
+      }
+    }
+  }
+
+  /** Repo layout in dev, resourcesPath layout in a packaged exe. */
+  private findBundledAsset(relative: string): string | undefined {
+    const resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "";
+    const candidates = [
+      path.join(this.appRoot, relative),
+      resourcesPath ? path.join(resourcesPath, relative) : "",
+    ].filter(Boolean);
+    return candidates.find((candidate) => fs.existsSync(candidate));
   }
 
   /** Create a new session + workspace directories. */
