@@ -51,18 +51,33 @@ export class ConversationManager {
   }
 
   /**
-   * Closest outbound reply to the given server-side timestamp. The send API
-   * returns no msg_id, so quotes of OUR OWN replies cannot resolve by id;
-   * instead the quote carries the quoted message's create_time_ms, which
-   * lands within seconds of the outbound conversations row (written just
-   * before the send). Window [-30s, +10s] absorbs multi-bubble replies.
+   * Closest conversation row (ANY direction) to the given server-side
+   * timestamp. The send API returns no msg_id, so quotes of OUR OWN replies
+   * and sent media cannot resolve by id; instead the quote carries the quoted
+   * message's create_time_ms, which lands within seconds of the conversations
+   * row (written just before the send / just after the receive). Window
+   * [-30s, +10s] absorbs multi-bubble replies. The caller must classify the
+   * matched row: a media row may not be returned as quoted TEXT.
    */
-  findOutboundTextNear(userId: number, epochMs: number): string | null {
+  findConversationRowNear(
+    userId: number,
+    epochMs: number,
+  ): {
+    direction: "inbound" | "outbound";
+    messageType: number;
+    textContent: string | null;
+    fileRefs: string | null;
+  } | null {
     const epochSec = Math.floor(epochMs / 1000);
-    const row = queryOne<{ text_content: string | null }>(
-      `SELECT text_content
+    const row = queryOne<{
+      direction: "inbound" | "outbound";
+      message_type: number;
+      text_content: string | null;
+      file_refs: string | null;
+    }>(
+      `SELECT direction, message_type, text_content, file_refs
        FROM conversations
-       WHERE user_id = ? AND direction = 'outbound'
+       WHERE user_id = ?
          AND created_at >= ? AND created_at <= ?
        ORDER BY ABS(CAST(strftime('%s', created_at) AS INTEGER) - ?)
        LIMIT 1`,
@@ -73,8 +88,13 @@ export class ConversationManager {
         epochSec,
       ],
     );
-    const text = row?.text_content?.trim();
-    return text ? text : null;
+    if (!row) return null;
+    return {
+      direction: row.direction,
+      messageType: row.message_type,
+      textContent: row.text_content,
+      fileRefs: row.file_refs,
+    };
   }
 
   /**

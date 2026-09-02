@@ -730,21 +730,28 @@ export class Bridge {
     // Bot replies have no entry in the quote index (the send API returns no
     // msg_id to index under). Recover them by time: the quote carries the
     // quoted message's server create_time_ms, which lands within seconds of
-    // the outbound conversations row written just before the send.
+    // a conversations row. The matched row MUST be classified — a media row
+    // (sent image/file, or a pure-media inbound marker) may not be returned
+    // as quoted text.
     if (quoted.createTimeMs) {
-      const matched = this.cm.findOutboundTextNear(userId, quoted.createTimeMs);
-      if (matched && !PLACEHOLDER_TEXTS.has(matched.trim())) {
-        if (quoted.msgId) {
-          // Cache the resolution: repeat quotes of the same message then hit
-          // the index directly instead of re-running the time match.
-          this.cm.saveMessageText({
-            msgId: quoted.msgId,
-            userId,
-            itemType: "text",
-            textContent: matched,
-          });
+      const row = this.cm.findConversationRowNear(userId, quoted.createTimeMs);
+      if (row) {
+        const media = this.classifyMediaRow(row);
+        if (media) return media;
+        const text = row.textContent?.trim();
+        if (text && !PLACEHOLDER_TEXTS.has(text)) {
+          if (quoted.msgId) {
+            // Cache the resolution: repeat quotes of the same message then hit
+            // the index directly instead of re-running the time match.
+            this.cm.saveMessageText({
+              msgId: quoted.msgId,
+              userId,
+              itemType: "text",
+              textContent: text,
+            });
+          }
+          return { text };
         }
-        return { text: matched };
       }
     }
 
@@ -758,6 +765,40 @@ export class Bridge {
       return { unresolvedLabel: "消息" };
     }
     return {};
+  }
+
+  /**
+   * A time-matched conversations row that represents MEDIA, not text:
+   * - outbound rows recorded when sending an image/file → resolve to a
+   *   self-describing marker (the file still sits in the workspace, so the
+   *   agent can re-open it with its tools instead of guessing);
+   * - inbound pure-media markers ("[image message]") → honest unresolved
+   *   label; if a vision description existed, the index lookup would have
+   *   hit before the time match.
+   */
+  private classifyMediaRow(row: {
+    direction: "inbound" | "outbound";
+    messageType: number;
+    textContent: string | null;
+    fileRefs: string | null;
+  }): { text: string } | { unresolvedLabel: string } | null {
+    if (row.direction === "outbound") {
+      if (row.messageType === 2) {
+        return {
+          text: `我发出的图片（${row.fileRefs ?? "未知文件名"}，位于工作区 output_weixin/ 下，可用 transcribe_image 工具查看内容）`,
+        };
+      }
+      if (row.messageType === 4) {
+        return { text: `我发出的文件（${row.fileRefs ?? "未知文件名"}，位于工作区 output_weixin/ 下）` };
+      }
+      return null;
+    }
+    const marker = row.textContent?.trim() ?? "";
+    if (marker.startsWith("[image")) return { unresolvedLabel: "图片" };
+    if (marker.startsWith("[voice")) return { unresolvedLabel: "语音" };
+    if (marker.startsWith("[video")) return { unresolvedLabel: "视频" };
+    if (marker.startsWith("[file")) return { unresolvedLabel: "文件" };
+    return null;
   }
 
   private shouldAttachMedia(msg: ParsedMessage): boolean {
@@ -879,6 +920,19 @@ export class Bridge {
         kind: file.kind,
       });
       recordAgentEvent(session.id, "file_out", `${file.fileName}（${file.kind === "image" ? "图片" : "文件"}，${Math.round(fs.statSync(file.filePath).size / 1024)}KB）`);
+      // Record the delivery so a later quote of this image/file resolves via
+      // time matching (message_type mirrors WeChat item types: 2=image,
+      // 4=file) and the conversation view shows what was sent.
+      this.cm.addMessage({
+        sessionId: session.id,
+        userId: session.userId,
+        direction: "outbound",
+        messageType: file.kind === "image" ? 2 : 4,
+        textContent: file.kind === "image"
+          ? `[发送图片: ${file.fileName}]`
+          : `[发送文件: ${file.fileName}]`,
+        fileRefs: file.fileName,
+      });
 
       // Index outbound images so the user can quote them back later. The
       // file is still on disk in the workspace; extraction is fire-and-forget
