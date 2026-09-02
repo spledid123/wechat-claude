@@ -69,7 +69,7 @@ docs/                                  文档
 `message_text_index` 按**用户全局**存储每条消息的解析文本（跨对话可查）。引用解析两级：服务端 msg_id 精确匹配 → 失败注入"未能解析"提示（**不吞消息**）。agent 发出的图片发送后异步提取入库，同样可被引用。
 
 ### 3.4 Agent 会话（01）
-每微信会话一个工作区；对话记忆 = 注入最近 6 条历史（每条截 500 字），SDK 每次独立查询（无 resume）。会话对象轻量、模型可热切换（config 变化即重建）、闲置 1 小时淘汰。权限：写入限工作区，Bash 写意图拦截（Windows 无 OS 沙箱）。
+每微信会话一个工作区；对话记忆 = 注入最近 6 条历史（每条截 500 字），SDK 每次独立查询（无 resume）。会话对象轻量、模型可热切换（config 变化即重建）、闲置 1 小时淘汰。权限：写入限工作区，Bash 写意图拦截（Windows 无 OS 沙箱）——完整规则见 [Agent 权限模型详解](permissions.md)。
 
 **桥接能力 MCP 工具化（混合协作）**：前置预处理仍是主路径（确定性、零 agent 回合）；`bridge-tools.ts` 用 SDK `createSdkMcpServer` 另提供五个进程内工具供 agent 按需调用——`extract_document`（markitdown）、`render_pdf_pages`（≤20 页/次）、`read_scanned_pdf`（渲染+视觉转录一步返回文本，split 模式可用，vision 不占 agent 回合）、`transcribe_image`、`extract_pdf_images`（抽取 PDF 内嵌原始图表为文件，过滤 <100px 图标/去重/≤40 张）。**所有工具中间文件只落工作区**：渲染页 `working/pdf_pages/`、内嵌图 `working/pdf_images/`；工具名已入权限白名单；扫描版续读指引首选工具、Bash 降级保留。经 Bridge 的 `createMcpServers` 钩子按消息创建（定时任务 runAgent 同样接线）。
 

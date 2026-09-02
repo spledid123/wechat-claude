@@ -110,8 +110,10 @@ src/runtime/         正式服务运行时
 src/electron/        Electron 托盘入口
 src/types/           生产构建需要的补充类型声明
 scripts/             正式构建、启动和打包脚本
-docs/                使用、架构、打包说明
+docs/                使用、架构、权限、打包说明
 ```
+
+Agent 权限规则（允许/拒绝哪些工具、写入如何限制在工作区、Bash 启发式拦截的边界）详见 [Agent 权限模型详解](docs/permissions.md)。
 
 ## 本地数据和忽略规则
 
