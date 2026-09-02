@@ -14,7 +14,8 @@
     "dist:win:zip": "npm run dist:win:dir && powershell -ExecutionPolicy Bypass -File scripts/package-win-zip.ps1",
     "dist:src:zip": "powershell -ExecutionPolicy Bypass -File scripts/package-source-zip.ps1",
     "check-sdk": "node scripts/check-claude-sdk.js",
-    "app:service": "tsx src/cli.ts"
+    "app:service": "tsx src/cli.ts",
+    "uninstall": "powershell -ExecutionPolicy Bypass -File scripts/uninstall.ps1"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.0",

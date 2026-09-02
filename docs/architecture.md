@@ -142,11 +142,13 @@ Python（可选，仅文档解析）：uv 管理，`markitdown[all]` + `pymupdf`
 ## 七、环境准备与构建
 
 ```powershell
-npm run setup          # 新机一键：npm install + uv venv + markitdown
+npm run setup          # 新机一键：npm install + uv venv + markitdown/pymupdf
+                       # 全新机器（无 Node/uv）直接双击 setup.cmd（scripts/setup-machine.ps1）
 npm run build:app      # 编译（最低验证门槛）
 npm start              # CLI 运行；托盘：npm run electron:dev
 npm run dist:win:zip   # 运行版 zip（exe，~187MB）
 npm run dist:src:zip   # 源码转移 zip（git 跟踪文件，~200KB）
+npm run uninstall      # 清理依赖与构建产物（-All 彻底清理，见 scripts/uninstall.ps1）
 ```
 
 ## 八、验证

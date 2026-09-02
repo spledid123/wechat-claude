@@ -10,6 +10,32 @@ WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信�
 - 本地数据默认写入程序所在目录旁边的 `.wechat-claude/`，不会提交到 git。
 - Windows portable exe 通过 `electron-builder` 生成，产物在 `release/`，不会提交到 git。
 
+## 环境要求与一键安装
+
+| 项目 | 要求 | 安装方式 |
+| --- | --- | --- |
+| 操作系统 | Windows 10（1709+）/ Windows 11，x64 | — |
+| Node.js | ≥ 20，推荐 22 LTS | `winget install OpenJS.NodeJS.LTS`，或 [nodejs.org/zh-cn](https://nodejs.org/zh-cn) 下载 LTS x64 安装包；`node -v` 验证 |
+| uv | 任意近期版本 | `winget install astral-sh.uv`，或 PowerShell 执行 `irm https://astral.sh/uv/install.ps1 \| iex` |
+| Python | 无需手动安装 | 由 uv 自动下载托管版 CPython 并建入项目 `.venv` |
+| 磁盘 | 约 700MB | node_modules ≈400MB（含 Claude CLI 二进制）+ .venv ≈300MB（markitdown + pymupdf） |
+
+说明：
+
+- winget 在 Windows 10 1709+ 一般自带；没有时可从微软商店安装"应用安装程序"，或按上表用官网安装包替代。
+- **一键安装：双击 `setup.cmd`**（或在项目目录运行 `powershell -ExecutionPolicy Bypass -File scripts/setup-machine.ps1`）。脚本会检查并补装缺失的 Node.js / uv（经 winget），创建 `.env`（从 `.env.example` 复制，需自行填入密钥），然后安装全部依赖。**幂等可重跑**，中断后重新双击即从断点续上。
+- 机器上已有 Node.js 和 uv 时，`npm run setup` 等效（跳过系统组件检测）。
+- macOS / Linux：核心服务代码平台中立，但安装/启动/打包脚本（PowerShell/cmd）与 Python 路径探测（`.venv\Scripts\python.exe`）均为 Windows 设计，当前**不作正式支持**。强行运行需：自行 `npm install`、手动创建 venv 并设置 `WECHAT_CLAUDE_PYTHON` 指向 `.venv/bin/python`、直接 `npx tsx src/cli.ts` 启动。
+
+**一键卸载**：双击 `uninstall.cmd`（或 `npm run uninstall`）。默认只清理依赖与构建产物（node_modules / .venv / dist / .tmp），源码、`.env` 密钥与微信数据不受影响，重跑 `setup.cmd` 可完全恢复。可选参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `-RemoveData` | 额外删除 `.wechat-claude\`（微信 token、对话数据库、工作区，不可恢复，会二次确认） |
+| `-RemoveEnv` | 额外删除 `.env`（会二次确认） |
+| `-All` | 以上全部 + `release\` 打包产物 |
+| `-Yes` | 跳过二次确认（供脚本调用） |
+
 ## 快速开始
 
 ```powershell
@@ -18,7 +44,7 @@ npm run build:app
 npm start
 ```
 
-`npm run setup` 一键安装全部依赖：Node 包（`npm install`，含打包工具链）+ Python 预处理环境（uv 管理，仅 markitdown，约 290MB；机器上没有 uv 时自动跳过并给出提示——不影响图片理解与普通聊天，仅 PDF/Office 解析不可用）。也可以只跑 `npm install` 不装 Python。
+`npm run setup` 一键安装全部依赖：Node 包（`npm install`，含打包工具链）+ Python 预处理环境（uv 管理，markitdown + pymupdf，约 300MB；机器上没有 uv 时自动跳过并给出提示——不影响图片理解与普通聊天，仅 PDF/Office/扫描版解析不可用）。也可以只跑 `npm install` 不装 Python。全新机器（连 Node.js 都没有）直接双击 `setup.cmd`，见上面的"环境要求与一键安装"。
 
 启动后会打印本地管理面板地址，默认类似：
 

@@ -15,7 +15,7 @@ release/
 └── WeChat-Claude-source.zip            ← 源码版（给开发机转移）
 ```
 
-源码 zip 用 `npm run dist:src:zip` 生成：基于 `git archive`，只含 git 跟踪的源码/脚本/文档/配置，自动排除 node_modules、.venv、.wechat-claude（数据/微信 token）、.env（密钥）等。**只包含已提交的内容，打包前先 commit。** 新机器解压后 `npm run setup` 装依赖，再按需放入 `.env` 和 `.wechat-claude\`。
+源码 zip 用 `npm run dist:src:zip` 生成：基于 `git archive`，只含 git 跟踪的源码/脚本/文档/配置，自动排除 node_modules、.venv、.wechat-claude（数据/微信 token）、.env（密钥）等。**只包含已提交的内容，打包前先 commit。** 新机器解压后双击 `setup.cmd`（零依赖，会自动补装缺失的 Node.js/uv；已有环境时 `npm run setup` 等效），再按需放入 `.env` 和 `.wechat-claude\`。环境要求见 README"环境要求与一键安装"（Windows 10 1709+/11 x64，Node ≥ 20）。
 
 单文件 portable：
 
@@ -199,8 +199,14 @@ CLAUDE_CODE_EFFORT_LEVEL=max
 新机器首次准备（Node + Python 依赖一键安装）：
 
 ```powershell
+# 全新机器（连 Node.js/uv 都没有）：双击 setup.cmd，或
+powershell -ExecutionPolicy Bypass -File scripts/setup-machine.ps1
+
+# 已有 Node.js 与 uv 的机器：
 npm run setup
 ```
+
+前者会检查并经 winget 补装缺失的 Node.js（≥ 20，推荐 22 LTS）与 uv，从 `.env.example` 创建 `.env`，然后执行下述步骤；幂等可重跑。
 
 等价于 `npm install` + `uv venv .venv` + `uv pip install -r scripts/preprocess-requirements.txt`（无 uv 时跳过 Python 部分并提示）。脚本见 `scripts/setup-deps.ps1`。
 
