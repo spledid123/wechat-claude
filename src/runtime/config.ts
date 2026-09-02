@@ -27,6 +27,8 @@ export interface RuntimeConfig {
   preprocessMaxChars: number;
   /** Aggregate cap on extracted text across all files in one message batch. */
   preprocessBatchMaxChars: number;
+  /** Max parallel vision HTTP calls for scanned-PDF page transcription. */
+  visionConcurrency: number;
   /** Optional API endpoint override (Anthropic-compatible). */
   anthropicBaseUrl?: string;
   /** Optional API key override (x-api-key). Secret — never returned to the panel. */
@@ -45,6 +47,8 @@ export const DEFAULT_CONFIG: RuntimeConfig = {
   debounceMaxMs: readPositiveIntEnv("WECHAT_CLAUDE_MAX_DEBOUNCE_MS", 15000),
   preprocessMaxChars: 50_000,
   preprocessBatchMaxChars: 150_000,
+  // 20-page batches go fully parallel — measured ~67s wall for a dense book.
+  visionConcurrency: 20,
 };
 
 export function configFilePath(dataDir: string): string {
@@ -87,6 +91,7 @@ export function readConfig(dataDir: string): RuntimeConfig {
         raw.preprocessBatchMaxChars,
         DEFAULT_CONFIG.preprocessBatchMaxChars,
       ),
+      visionConcurrency: Math.min(20, positiveIntOr(raw.visionConcurrency, DEFAULT_CONFIG.visionConcurrency)),
       anthropicBaseUrl: nonEmptyStringOrNone(raw.anthropicBaseUrl),
       anthropicApiKey: nonEmptyStringOrNone(raw.anthropicApiKey),
       anthropicAuthToken: nonEmptyStringOrNone(raw.anthropicAuthToken),

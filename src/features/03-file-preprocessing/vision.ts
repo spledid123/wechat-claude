@@ -12,6 +12,7 @@
  */
 
 import fs from "node:fs";
+import path from "node:path";
 
 export type InlineImageMediaType = "image/jpeg" | "image/png" | "image/gif" | "image/webp";
 
@@ -93,6 +94,74 @@ export function prepareImagePayload(filePath: string, name: string): PrepareResu
 export interface VisionExtraction {
   description: string;
   transcript: string;
+}
+
+/**
+ * Run an async map with bounded parallelism. Used to transcribe scanned-PDF
+ * pages concurrently — the vision endpoint accepts parallel requests, and a
+ * 20-page batch drops from ~4min (serial) to ~1min at concurrency 20.
+ */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = next++;
+      if (index >= items.length) break;
+      results[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Transcribe rendered PDF pages concurrently into "[第N页]\n<text>" blocks.
+ * Parallel bursts occasionally return empty — each failed page gets one
+ * serial retry before falling back to a placeholder.
+ */
+export async function transcribePdfPages(
+  pagePaths: string[],
+  startPage: number,
+  options: { model: string; concurrency: number },
+): Promise<string[]> {
+  const extract = (pagePath: string) =>
+    extractImageFileWithVision(pagePath, path.basename(pagePath), { model: options.model });
+
+  const texts: (string | null)[] = await mapWithConcurrency(
+    pagePaths,
+    options.concurrency,
+    async (pagePath) => {
+      const extracted = await extract(pagePath);
+      return extracted.ok ? extracted.text : null;
+    },
+  );
+
+  for (let i = 0; i < texts.length; i++) {
+    if (texts[i] !== null) continue;
+    const extracted = await extract(pagePaths[i]);
+    if (extracted.ok) texts[i] = extracted.text;
+  }
+
+  return pagePaths.map((_pagePath, i) => {
+    const pageNumber = startPage + i;
+    return `[第${pageNumber}页]\n${texts[i] ?? "(识别失败)"}`;
+  });
+}
+
+/**
+ * Rough wall-time estimate for a concurrent transcription batch, built on a
+ * ~12s/page serial baseline (dense book pages; plain documents are faster).
+ */
+export function estimateVisionMinutes(pageCount: number, concurrency: number): number {
+  const effective = Math.max(1, Math.min(concurrency, pageCount));
+  const seconds = Math.max(45, Math.ceil((pageCount * 12) / effective));
+  return Math.max(1, Math.ceil(seconds / 60));
 }
 
 export type ExtractResult =

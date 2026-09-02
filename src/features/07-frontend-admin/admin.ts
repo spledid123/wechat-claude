@@ -332,6 +332,7 @@ export class AdminServer {
           debounceMaxMs: config.debounceMaxMs,
           preprocessMaxChars: config.preprocessMaxChars,
           preprocessBatchMaxChars: config.preprocessBatchMaxChars,
+          visionConcurrency: config.visionConcurrency,
           // Secrets are never echoed back — only masked tails.
           anthropic: {
             baseUrl: config.anthropicBaseUrl ?? process.env.ANTHROPIC_BASE_URL ?? "",
@@ -360,6 +361,7 @@ export class AdminServer {
           1_000,
           1_000_000,
         ),
+        visionConcurrency: boundedInt(body.visionConcurrency, current.visionConcurrency, 1, 20),
         // Absent/empty means "keep the stored value" — the panel never sees secrets.
         anthropicBaseUrl: keepSecretOr(body.anthropicBaseUrl, current.anthropicBaseUrl),
         anthropicApiKey: keepSecretOr(body.anthropicApiKey, current.anthropicApiKey),
@@ -1075,6 +1077,7 @@ function renderAdminPage(): string {
           <div class="grid2">
             <label>单文件提取上限（字符）<input name="preprocessMaxChars" type="number" min="1000" max="500000" step="1000" placeholder="50000"></label>
             <label>单批总提取上限（字符）<input name="preprocessBatchMaxChars" type="number" min="1000" max="1000000" step="1000" placeholder="150000"></label>
+            <label>视觉转录并发数<input name="visionConcurrency" type="number" min="1" max="20" step="1" placeholder="20" title="扫描版 PDF 逐页识别的并发请求数，越高越快、越多偶发失败（会自动重试）"></label>
           </div>
           <div class="grid2">
             <label>API Base URL<input name="anthropicBaseUrl" placeholder="https://api.deepseek.com/anthropic"></label>
@@ -1321,6 +1324,7 @@ function renderAdminPage(): string {
       form.elements.debounceMaxMs.value = settings.debounceMaxMs;
       form.elements.preprocessMaxChars.value = settings.preprocessMaxChars;
       form.elements.preprocessBatchMaxChars.value = settings.preprocessBatchMaxChars;
+      form.elements.visionConcurrency.value = settings.visionConcurrency;
       form.elements.anthropicBaseUrl.value = settings.anthropic.baseUrl || "";
       form.elements.anthropicApiKey.placeholder = settings.anthropic.apiKeyTail
         ? "已配置 " + settings.anthropic.apiKeyTail + "，留空保持不变" : "未配置，留空保持不变";
@@ -1387,6 +1391,7 @@ function renderAdminPage(): string {
           debounceMaxMs: Number(form.get("debounceMaxMs")),
           preprocessMaxChars: Number(form.get("preprocessMaxChars")),
           preprocessBatchMaxChars: Number(form.get("preprocessBatchMaxChars")),
+          visionConcurrency: Number(form.get("visionConcurrency")),
           anthropicBaseUrl: form.get("anthropicBaseUrl") || undefined,
           anthropicApiKey: form.get("anthropicApiKey") || undefined,
           anthropicAuthToken: form.get("anthropicAuthToken") || undefined,

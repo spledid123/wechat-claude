@@ -15,6 +15,8 @@ import {
   prepareImagePayload,
   extractImageFileWithVision,
   extractImageWithVision,
+  transcribePdfPages,
+  estimateVisionMinutes,
   type ImagePayload,
 } from "../03-file-preprocessing/vision.js";
 import { DEFAULT_CONFIG, type RuntimeConfig } from "../../runtime/config.js";
@@ -197,7 +199,18 @@ export class Bridge {
         let scannedNotice: string | undefined;
 
         if (this.looksScannedPdf(fileName, result)) {
-          const fallback = await this.runScannedPdfExtraction(dlPath, session.cwd);
+          // Tell the user up front how long the vision batch will take —
+          // the transcription runs before any reply, so silence reads as a hang.
+          const notify = deliverReply && input.contextToken
+            ? async (text: string) => {
+                await this.sendText({
+                  toUserId: input.fromUserId,
+                  contextToken: input.contextToken,
+                  text,
+                });
+              }
+            : undefined;
+          const fallback = await this.runScannedPdfExtraction(dlPath, session.cwd, notify);
           if (fallback.text) {
             extractedText = fallback.text;
             truncated = fallback.truncated;
@@ -420,6 +433,7 @@ export class Bridge {
   private async runScannedPdfExtraction(
     pdfPath: string,
     workspaceRoot: string,
+    notify?: (text: string) => Promise<void>,
   ): Promise<{ text?: string; notice?: string; error?: string; truncated?: boolean }> {
     const outDir = path.join(workspaceRoot, "working", "pdf_pages");
     const render = await this.pp.renderPdfPages(pdfPath, outDir, {
@@ -430,18 +444,25 @@ export class Bridge {
       return { error: render.error ?? "PDF 页面渲染失败" };
     }
 
-    const model = this.getRuntimeConfig().visionModel;
-    const parts: string[] = [];
-    for (let i = 0; i < render.pagePaths.length; i++) {
-      const pageNumber = render.start + i;
-      const pagePath = render.pagePaths[i];
-      const extracted = await extractImageFileWithVision(
-        pagePath,
-        path.basename(pagePath),
-        { model },
-      );
-      parts.push(`[第${pageNumber}页]\n${extracted.ok ? extracted.text : `(识别失败: ${extracted.error})`}`);
+    const config = this.getRuntimeConfig();
+    const pageCount = render.pagePaths.length;
+    const concurrency = Math.min(config.visionConcurrency, pageCount);
+    if (notify && pageCount > 0) {
+      const etaMinutes = estimateVisionMinutes(pageCount, concurrency);
+      try {
+        await notify(
+          `📖 扫描版 PDF（共 ${render.total} 页）：正在视觉识别第 ${render.start}-${render.start + pageCount - 1} 页`
+          + `（${concurrency} 路并发），预计约 ${etaMinutes} 分钟，请稍候…`,
+        );
+      } catch {
+        // The ETA message is a courtesy — a failed send must not stop processing.
+      }
     }
+
+    const parts = await transcribePdfPages(render.pagePaths, render.start, {
+      model: config.visionModel,
+      concurrency,
+    });
 
     const text = parts.join("\n\n").trim();
     if (!text) {
@@ -472,7 +493,8 @@ export class Bridge {
       const remaining = render.total - nextPage + 1;
       lines.push(
         `如需其余页面，调用 read_scanned_pdf 工具：file_path="${rel(pdfPath)}", start=${nextPage}, `
-          + `count=${Math.min(remaining, 20)}（每次最多 20 页，可多次调用）。`,
+          + `count=${Math.min(remaining, 20)}（每次最多 20 页、每批约 1-2 分钟，可多次调用；`
+          + "调用时程序会先给用户发送预计耗时提示）。",
       );
       const python = this.pp.getPythonPath();
       if (python) {

@@ -62,7 +62,7 @@ docs/                                  文档
 - **分离 split**：图片先由 `vision.ts` 直连视觉模型提取"描述+转录"文本，注入对话模型上下文。
 - 门槛：魔数嗅探真实格式（不信任扩展名）、单图 ≤15MB、单请求 ≤10 张；失败报错不回退。
 - PDF/Office 走 markitdown（可选 Python 环境），文本文件内置读取；**OCR 已移除**。
-- **扫描版 PDF 视觉回退**：markitdown 对 PDF 附带页数统计（PyMuPDF），每页提取文字 <100 字符即判定扫描版——自动渲染前 20 页 PNG（`working/pdf_pages/`），逐页走既有 vision 转录并按 `[第N页]` 拼接；提示词附带续读命令（工作区内 `tools/preprocess.py` + venv python），AI 可自行渲染并 Read 剩余页面（直连模式）。旧版 `.doc/.xls/.ppt` 直接提示转存。
+- **扫描版 PDF 视觉回退**：markitdown 对 PDF 附带页数统计（PyMuPDF），每页提取文字 <100 字符即判定扫描版——先给用户微信发送 ETA 提示（"正在视觉识别第 a-b 页，预计约 X 分钟"，按 12 秒/页÷并发估算），再并发渲染+转录前 20 页（`working/pdf_pages/`，`transcribePdfPages` 并发数=visionConcurrency，失败页串行重试一次），按 `[第N页]` 拼接；提示词附续读命令，AI 可自行渲染并 Read 剩余页面（直连模式），或调用 `read_scanned_pdf` 工具（工具批次 ≥5 页同样先发 ETA）。旧版 `.doc/.xls/.ppt` 直接提示转存。
 - **文档生成参考资料**：会话工作区初始化时把仓库 `skills/`（minimax-xlsx / pptx-generator / docx，纯文件约 1MB）和 `scripts/preprocess.py`（→ `tools/`）复制进工作区。不走 SDK 的 skills 机制——AI 用已放行的 Read/Bash 直接使用；生成物写入 `working/output_weixin/` 即自动发回。
 
 ### 3.3 引用机制（04 + 01）
@@ -103,6 +103,7 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 | debounceMaxMs | 15000 | 批次累计上限 |
 | preprocessMaxChars | 50000 | 单文件提取文本上限（字符），超出截断并告知 AI 路径自行续读 |
 | preprocessBatchMaxChars | 150000 | 单批附件提取总量上限（字符），后续文件只留路径 |
+| visionConcurrency | 20 | 扫描版逐页视觉转录并发数（实测 20 页全并发约 1 分钟；偶发失败自动串行重试） |
 | anthropicBaseUrl / anthropicApiKey / anthropicAuthToken | 未设置 | API 接入覆盖（面板"设置"页可填），**优先于 .env**，保存即生效；密钥不回显，仅显示末 4 位，留空保持不变 |
 
 `.env` 密钥（`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`）作为底层默认：系统环境变量 → exe 旁 `.env` → 数据目录 `.env`；上表字段再覆盖其上。服务启动与面板保存时统一应用到运行时（vision 直连与 SDK 子进程环境同步生效）。

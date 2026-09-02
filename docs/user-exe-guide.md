@@ -47,7 +47,7 @@ BMP 格式暂不支持视觉解析（会提示转换后重发）；图片解析�
 | 文件类型 | 工具 | 说明 |
 | --- | --- | --- |
 | `.png .jpg .jpeg .gif .webp` | DeepSeek vision（内置） | 不需要 Python |
-| `.pdf .docx .xlsx .pptx` | markitdown + pymupdf | 转 Markdown 文本；扫描版 PDF 自动逐页视觉识别（上限 20 页） |
+| `.pdf .docx .xlsx .pptx` | markitdown + pymupdf | 转 Markdown 文本；扫描版 PDF 自动逐页视觉识别（上限 20 页/批，**识别前会先发微信提示预计耗时**，并发加速约 1 分钟/批） |
 | `.epub .msg .zip` | markitdown | 电子书 / Outlook 邮件 / 压缩包内容 |
 | `.doc .xls .ppt` | 不支持 | 旧版二进制格式，请另存为 `.docx/.xlsx/.pptx` 或 PDF 后重发 |
 | `.txt .py .js .csv .json .md .log` 等 | 内置读取 | 不需要 Python |

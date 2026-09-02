@@ -16,21 +16,30 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import path from "node:path";
 import type { FilePreprocessor } from "../../03-file-preprocessing/preprocessor.js";
-import { extractImageFileWithVision } from "../../03-file-preprocessing/vision.js";
+import {
+  extractImageFileWithVision,
+  transcribePdfPages,
+  estimateVisionMinutes,
+} from "../../03-file-preprocessing/vision.js";
 import type { RuntimeConfig } from "../../../runtime/config.js";
 
 /** Matches the eager scanned-PDF fallback cap — one tool call, one batch. */
 const MAX_PAGES_PER_CALL = 20;
 
+/** Batches below this size are fast enough to skip the WeChat ETA message. */
+const NOTIFY_MIN_PAGES = 5;
+
 export interface BridgeToolsParams {
   sessionCwd: string;
   preprocessor: FilePreprocessor;
   getConfig: () => RuntimeConfig;
+  /** Sends a WeChat message to this session's user (progress notices). */
+  notify?: (text: string) => Promise<void>;
 }
 
 /** Build the in-process "bridge" MCP server for one session/message. */
 export function createBridgeMcpServer(params: BridgeToolsParams): Record<string, unknown> {
-  const { sessionCwd, preprocessor, getConfig } = params;
+  const { sessionCwd, preprocessor, getConfig, notify } = params;
   const resolveInput = (value: string) => path.resolve(sessionCwd, value);
   const pagesDir = path.join(sessionCwd, "working", "pdf_pages");
 
@@ -93,17 +102,24 @@ export function createBridgeMcpServer(params: BridgeToolsParams): Record<string,
         return textResult(`渲染失败: ${render.error ?? "未知错误"}`, true);
       }
 
-      const model = getConfig().visionModel;
-      const parts: string[] = [];
-      for (let i = 0; i < render.pagePaths.length; i++) {
-        const pageNumber = render.start + i;
-        const extracted = await extractImageFileWithVision(
-          render.pagePaths[i],
-          path.basename(render.pagePaths[i]),
-          { model },
-        );
-        parts.push(`[第${pageNumber}页]\n${extracted.ok ? extracted.text : `(识别失败: ${extracted.error})`}`);
+      const config = getConfig();
+      const concurrency = Math.min(config.visionConcurrency, render.pagePaths.length);
+      if (notify && render.pagePaths.length >= NOTIFY_MIN_PAGES) {
+        const etaMinutes = estimateVisionMinutes(render.pagePaths.length, concurrency);
+        try {
+          await notify(
+            `📖 正在识别第 ${render.start}-${render.start + render.rendered - 1} 页`
+            + `（共 ${render.total} 页，${concurrency} 路并发），预计约 ${etaMinutes} 分钟…`,
+          );
+        } catch {
+          // Courtesy notice only — never fail the tool call over it.
+        }
       }
+
+      const parts = await transcribePdfPages(render.pagePaths, render.start, {
+        model: config.visionModel,
+        concurrency,
+      });
       return textResult(
         `（共 ${render.total} 页，本次转录第 ${render.start}-${render.start + render.rendered - 1} 页）\n\n`
           + parts.join("\n\n"),

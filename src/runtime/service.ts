@@ -178,6 +178,7 @@ export class WechatClaudeService {
               sessionCwd: session.cwd,
               preprocessor: pp,
               getConfig: () => readConfig(this.paths.dataDir),
+              notify: (text) => sendWechatText({ toUserId: userId, contextToken, text }),
             }),
           );
           return result.text;
@@ -204,12 +205,19 @@ export class WechatClaudeService {
       }
 
       const sendWechatAttachment = createWechatSendAttachment(botToken);
-      const createSessionMcpServers = (params: {
+      const createSessionMcpServers = ({
+        fromUserId,
+        contextToken,
+        session,
+      }: {
+        fromUserId: string;
+        contextToken: string;
         session: { cwd: string };
       }) => createBridgeMcpServer({
-        sessionCwd: params.session.cwd,
+        sessionCwd: session.cwd,
         preprocessor: pp,
         getConfig: () => readConfig(this.paths.dataDir),
+        notify: (text) => sendWechatText({ toUserId: fromUserId, contextToken, text }),
       });
       const bridge = new Bridge(
         this.claude,
