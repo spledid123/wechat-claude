@@ -82,7 +82,7 @@ docs/                                  文档
 once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用户微信确认；错过的任务在服务启动时补跑。
 
 ### 3.7 管理面板（07）
-四标签：概览（指标/AI 后端状态卡含 token 用量/**Agent 处理流程实时卡**——1 秒增量轮询 SDK 内部逐轮文本/思考/工具调用与结果/用量/存储概览/最近异常，5 秒局部刷新）、对话（会话摘要+懒加载消息+**多选批量删除**）、任务、设置（模式/模型/去抖+报文记录管理）。API：`/api/status|auth|settings|agent-status|agent-events|storage|recent-errors|conversations|sessions/:id/messages|quote-files` 等。
+四标签：概览（指标/AI 后端状态卡含 token 用量/**Agent 处理流程实时卡**——1 秒增量轮询 SDK 内部逐轮文本/思考/工具调用与结果/用量，以及程序自身的收发与文件处理事件，行可点开看全文；存储概览/最近异常，5 秒局部刷新）、对话（会话摘要+懒加载消息+**多选批量删除**，发出/收到的图片文件以标记行展示）、任务、设置（模式/模型/去抖+报文记录管理、预处理字符上限、扫描版视觉并发、API 接入与视觉通道独立接入）。API：`/api/status|auth|settings|agent-status|agent-events|storage|recent-errors|conversations|sessions/:id/messages|quote-files` 等。
 
 ### 3.8 Electron（electron）
 托盘常驻、打开面板/数据目录/日志、重启、退出；portable 数据目录用 `PORTABLE_EXECUTABLE_DIR`。
@@ -105,6 +105,7 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 | preprocessBatchMaxChars | 150000 | 单批附件提取总量上限（字符），后续文件只留路径 |
 | visionConcurrency | 20 | 扫描版逐页视觉转录并发数（实测 20 页全并发约 1 分钟；偶发失败自动串行重试） |
 | anthropicBaseUrl / anthropicApiKey / anthropicAuthToken | 未设置 | API 接入覆盖（面板"设置"页可填），**优先于 .env**，保存即生效；密钥不回显，仅显示末 4 位，留空保持不变 |
+| visionBaseUrl / visionApiKey / visionAuthToken | 未设置 | **视觉通道独立接入**（面板"设置"页可填）：扫描版 PDF 转录与图片提取可走另一家供应商/另一把密钥（如主通道 GLM、视觉 DeepSeek）；凭证与主接入互斥——只要通道填了任一凭证，视觉请求就完全使用通道自己的 Base URL + 凭证，不再混合主接入；全部留空则跟随主接入 |
 
 `.env` 密钥（`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`）作为底层默认：系统环境变量 → exe 旁 `.env` → 数据目录 `.env`；上表字段再覆盖其上。服务启动与面板保存时统一应用到运行时（vision 直连与 SDK 子进程环境同步生效）。
 
@@ -163,7 +164,7 @@ npm run uninstall      # 清理依赖与构建产物（-All 彻底清理，见 s
 1. `npm run build:app` 编译通过
 2. `npx tsx scripts/vision-test.ts 图片路径 [--extract|--direct]`——离线格式检查 / 视觉提取 / 端到端 blocks
 3. `npm start` 冒烟：面板可开、四标签正常、无 token 时扫码流程可用
-4. 真机验收清单：普通对话、发图（直连+分离各一）、引用已发图片（跨对话）、定时任务、自动发文件
+4. 真机验收清单：普通对话、发图（直连+分离各一）、引用自己的消息/引用 AI 的回复/引用 AI 发出的图片（时间匹配与媒体行分类）、定时任务、自动发文件、`/stop` 终止
 
 ## 九、启动 / 停止 / 无 token
 
@@ -187,4 +188,5 @@ npm run uninstall      # 清理依赖与构建产物（-All 彻底清理，见 s
 | README.md | 项目入口与交接提示 |
 | docs/user-exe-guide.md | 使用者手册（exe 运行、面板、迁移、排障） |
 | docs/packaging.md | 打包、依赖、运行时配置与维护 |
-| docs/wechat-ilink-api.md | 微信协议实战与踩坑（含大数陷阱） |
+| docs/permissions.md | Agent 权限模型详解（工具判定、工作区限制、Bash 启发式边界） |
+| docs/wechat-ilink-api.md | 微信协议实战与踩坑（含大数陷阱、sendmessage 不返回 msg_id） |

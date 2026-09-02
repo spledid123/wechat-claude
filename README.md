@@ -135,13 +135,13 @@ test_output.json
 ## 交接提示
 
 - 数据库迁移文件在 `src/features/01-claude-dialogue/db/migrations/`。
-- 管理后台在 `src/features/07-frontend-admin/admin.ts`，含"模型与图片设置"和报文记录管理。
+- 管理后台在 `src/features/07-frontend-admin/admin.ts`：模式/模型/去抖、预处理上限与扫描并发、API 接入与视觉通道独立接入、报文记录管理、Agent 处理流程实时卡。
 - 图片解析走 DeepSeek vision（`src/features/03-file-preprocessing/vision.ts`），直连/分离模式与模型名在 `.wechat-claude/config.json`，管理面板可改、即时生效；OCR 已移除。
 - PDF/Office 文档解析走可选的 Python markitdown + pymupdf（`scripts/preprocess.py`）；扫描版 PDF 自动逐页视觉识别（上限 20 页，AI 可在工作区自行续读）；图片能力不依赖 Python。
 - 文档生成参考技能在仓库 `skills/`（minimax-xlsx / pptx-generator / docx），会话创建时复制进工作区供 AI 用 Read 直接使用，不走 SDK skills 机制。
-- 桥接预处理原语已工具化（`claude/bridge-tools.ts`，进程内 MCP）：extract_document / render_pdf_pages / read_scanned_pdf / transcribe_image，agent 可按需调用，扫描版续读首选工具。
+- 桥接预处理原语已工具化（`claude/bridge-tools.ts`，进程内 MCP）：extract_document / render_pdf_pages / read_scanned_pdf / transcribe_image / extract_pdf_images，agent 可按需调用，扫描版续读首选工具；所有中间文件只落会话工作区。
 - Agent 处理实时事件流：`claude/events.ts` 环形缓冲 + 面板概览"Agent 处理流程"卡（`/api/agent-events` 增量拉取）。
 - 微信收发 API 在 `src/features/02-wechat-connectivity/wechat/`，参数和踩坑见 [微信 iLink Bot API 实战文档](docs/wechat-ilink-api.md)。
-- Claude 权限和工作区限制在 `src/features/01-claude-dialogue/claude/permissions.ts`。
+- Claude 权限和工作区限制在 `src/features/01-claude-dialogue/claude/permissions.ts`，完整规则见 [Agent 权限模型详解](docs/permissions.md)。
 - Electron portable 数据目录修复逻辑在 `src/electron/paths.ts`。
 - 日志按大小轮转（`WECHAT_CLAUDE_LOG_MAX_MB`），原始报文按发送者记录在 `logs/quote/`；存储保留期由 `WECHAT_CLAUDE_RETENTION_DAYS` 控制。
