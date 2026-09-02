@@ -146,12 +146,47 @@ export function createBridgeMcpServer(params: BridgeToolsParams): Record<string,
     },
   );
 
+  const extractPdfImages = tool(
+    "extract_pdf_images",
+    "抽取 PDF 页面内嵌的原始图片（图表/插图，保留原始格式与分辨率），保存到 working/pdf_images/ 并返回路径。"
+    + "适合需要精确查看 PDF 里的图表：直连模式用 Read 直接查看，或用 transcribe_image 转成文字描述。"
+    + "小于 100×100 的图标、重复图片自动跳过，每次最多 40 张。",
+    {
+      file_path: z.string().describe("PDF 路径"),
+      start: z.number().int().min(1).default(1).describe("起始页码（1 起）"),
+      count: z.number().int().min(1).max(MAX_PAGES_PER_CALL).default(10).describe("抽取的页数范围"),
+    },
+    async ({ file_path, start, count }) => {
+      const outDir = path.join(sessionCwd, "working", "pdf_images");
+      const result = await preprocessor.extractPdfImages(resolveInput(file_path), outDir, {
+        start,
+        maxPages: count,
+      });
+      if (!result.ok) {
+        return textResult(`抽取失败: ${result.error ?? "未知错误"}`, true);
+      }
+      if (result.imagePaths.length === 0) {
+        return textResult(
+          `第 ${result.start} 页起共扫描 ${count} 页，未找到内嵌图片`
+          + `（跳过 ${result.skipped} 个小图标/重复项）。该 PDF 可能是纯文字或整页扫描版`
+          + "（扫描版请用 read_scanned_pdf 或 render_pdf_pages）。",
+        );
+      }
+      const lines = result.imagePaths.map((p) => path.relative(sessionCwd, p).split(path.sep).join("/"));
+      return textResult(
+        `已从第 ${result.start} 页起抽取 ${lines.length} 张内嵌图片（跳过 ${result.skipped} 个小图标/重复项，共 ${result.total} 页）：\n`
+          + lines.join("\n")
+          + "\n可搭配 Read（直连模式）查看原图，或用 transcribe_image 转成文字描述。",
+      );
+    },
+  );
+
   return {
     bridge: createSdkMcpServer({
       name: "bridge",
       version: "1.0.0",
       alwaysLoad: true,
-      tools: [extractDocument, renderPdfPages, readScannedPdf, transcribeImage],
+      tools: [extractDocument, renderPdfPages, readScannedPdf, transcribeImage, extractPdfImages],
     }),
   };
 }

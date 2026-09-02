@@ -34,6 +34,7 @@ const BRIDGE_MCP_TOOLS = [
   "mcp__bridge__render_pdf_pages",
   "mcp__bridge__read_scanned_pdf",
   "mcp__bridge__transcribe_image",
+  "mcp__bridge__extract_pdf_images",
 ];
 
 const ALWAYS_ALLOW_TOOLS = new Set([

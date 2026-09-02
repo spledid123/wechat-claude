@@ -26,12 +26,16 @@ from typing import Any
 
 MAX_CHARS = int(os.environ.get("WECHAT_CLAUDE_PREPROCESS_MAX_CHARS", "50000"))
 RENDER_DPI = 150
+# Embedded-image extraction: skip icons/decorations below this size, and cap
+# one call so an image-heavy PDF cannot explode the workspace.
+MIN_IMAGE_DIM = 100
+MAX_IMAGES_PER_CALL = 40
 ORIGINAL_STDOUT = sys.stdout
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["markitdown", "text", "pdf-pages"], required=True)
+    parser.add_argument("--mode", choices=["markitdown", "text", "pdf-pages", "pdf-images"], required=True)
     parser.add_argument("--file", required=True)
     parser.add_argument("--out-dir")
     parser.add_argument("--start", type=int, default=1)
@@ -48,6 +52,8 @@ def main() -> None:
             result = preprocess_text(file_path)
         elif args.mode == "pdf-pages":
             result = render_pdf_pages(file_path, args)
+        elif args.mode == "pdf-images":
+            result = extract_pdf_images(file_path, args)
         else:
             result = preprocess_markitdown(file_path)
     except Exception as exc:  # noqa: BLE001 - user-facing boundary
@@ -162,6 +168,62 @@ def render_pdf_pages(file_path: Path, args: argparse.Namespace) -> dict[str, Any
         "start": first_index + 1,
         "rendered": len(paths),
         "pages": paths,
+    }
+
+
+def extract_pdf_images(file_path: Path, args: argparse.Namespace) -> dict[str, Any]:
+    """Extract original embedded images (figures) from the given PDF pages.
+
+    Keeps original bytes (JPEG stays JPEG); skips images smaller than
+    MIN_IMAGE_DIM (icons/dividers), dedupes repeated xrefs (logos), and caps
+    the output at MAX_IMAGES_PER_CALL files.
+    """
+    if not args.out_dir:
+        return {"ok": False, "error": "pdf-images 模式需要 --out-dir"}
+
+    try:
+        pymupdf = _pymupdf()
+    except ImportError:
+        return {"ok": False, "error": "pymupdf 未安装。请安装：pip install pymupdf"}
+
+    with contextlib.redirect_stdout(sys.stderr):
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with pymupdf.open(file_path) as doc:
+            total = doc.page_count
+            first_index = min(max(1, args.start) - 1, max(total - 1, 0))
+            last_index = min(first_index + max(args.max_pages, 0), total)
+            paths: list[str] = []
+            skipped = 0
+            seen_xrefs: set[int] = set()
+            for page_index in range(first_index, last_index):
+                for img in doc[page_index].get_images(full=True):
+                    xref, width, height = img[0], img[2], img[3]
+                    if xref in seen_xrefs:
+                        continue
+                    seen_xrefs.add(xref)
+                    if width < MIN_IMAGE_DIM or height < MIN_IMAGE_DIM:
+                        skipped += 1
+                        continue
+                    if len(paths) >= MAX_IMAGES_PER_CALL:
+                        skipped += 1
+                        continue
+                    try:
+                        info = doc.extract_image(xref)
+                    except Exception:  # noqa: BLE001 - corrupt/stenciled image
+                        skipped += 1
+                        continue
+                    ext = info.get("ext") or "png"
+                    out_path = out_dir / f"p{page_index + 1:04d}-img{len(paths) + 1:02d}.{ext}"
+                    out_path.write_bytes(info["image"])
+                    paths.append(str(out_path))
+
+    return {
+        "ok": True,
+        "total": total,
+        "start": first_index + 1,
+        "images": paths,
+        "skipped": skipped,
     }
 
 

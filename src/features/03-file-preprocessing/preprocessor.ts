@@ -76,10 +76,13 @@ interface PythonResult {
   truncated?: boolean;
   /** markitdown: total PDF page count; pdf-pages: rendered page file paths. */
   pages?: number | string[];
+  /** pdf-images: extracted embedded image file paths. */
+  images?: string[];
   chars_per_page?: number;
   total?: number;
   rendered?: number;
   start?: number;
+  skipped?: number;
 }
 
 export interface RenderPdfPagesResult {
@@ -88,6 +91,15 @@ export interface RenderPdfPagesResult {
   start: number;
   rendered: number;
   pagePaths: string[];
+  error?: string;
+}
+
+export interface ExtractPdfImagesResult {
+  ok: boolean;
+  total: number;
+  start: number;
+  imagePaths: string[];
+  skipped: number;
   error?: string;
 }
 
@@ -205,6 +217,44 @@ export class FilePreprocessor {
       start: result.start ?? (options.start ?? 1),
       rendered: result.rendered ?? result.pages.length,
       pagePaths: result.pages.map(String),
+    };
+  }
+
+  /**
+   * Extract original embedded images (figures) from PDF pages — keeps
+   * original bytes; icons (<100px), duplicates and the per-call cap are
+   * skipped on the Python side.
+   */
+  async extractPdfImages(
+    filePath: string,
+    outDir: string,
+    options: { start?: number; maxPages?: number } = {},
+  ): Promise<ExtractPdfImagesResult> {
+    const fallback: ExtractPdfImagesResult = {
+      ok: false, total: 0, start: options.start ?? 1, imagePaths: [], skipped: 0,
+    };
+    if (!fs.existsSync(filePath)) {
+      return { ...fallback, error: "文件不存在" };
+    }
+
+    const result = await this.runPythonArgs([
+      "--mode", "pdf-images",
+      "--file", filePath,
+      "--out-dir", outDir,
+      "--start", String(options.start ?? 1),
+      "--max-pages", String(options.maxPages ?? 20),
+    ]);
+
+    if (!result.ok || !Array.isArray(result.images)) {
+      return { ...fallback, error: result.error ?? "PDF 图片抽取失败" };
+    }
+
+    return {
+      ok: true,
+      total: result.total ?? 0,
+      start: result.start ?? (options.start ?? 1),
+      imagePaths: result.images.map(String),
+      skipped: result.skipped ?? 0,
     };
   }
 
