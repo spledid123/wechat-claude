@@ -1438,6 +1438,7 @@ function renderAdminPage(): string {
     };
     let agentEventSince = 0;
     const agentEventRows = [];
+    const expandedEvents = new Set();
 
     function renderAgentEvents() {
       const box = $("agentEvents");
@@ -1452,13 +1453,29 @@ function renderAdminPage(): string {
         const label = eventLabels[e.type] || e.type;
         const session = String(e.sessionId).slice(0, 8);
         const detail = String(e.detail || "").split("\\n")[0].slice(0, 160) || "—";
-        return '<div class="tiny" style="display:flex;gap:8px;align-items:baseline;min-width:0">'
+        const open = expandedEvents.has(e.seq);
+        let html = '<div data-event-seq="' + e.seq + '" class="tiny" style="display:flex;gap:8px;align-items:baseline;min-width:0;cursor:pointer" title="点击展开/收起完整内容">'
           + '<span style="color:var(--muted);flex:none">' + safe(time) + "</span>"
-          + '<span style="flex:none">[' + safe(label) + "]</span>"
+          + '<span style="flex:none">' + (open ? "▾" : "▸") + " [" + safe(label) + "]</span>"
           + '<span style="flex:none;color:var(--muted)">' + safe(session) + "</span>"
           + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + safe(detail) + "</span></div>";
+        if (open) {
+          const full = "[" + label + "] " + String(e.detail || "")
+            + (e.data ? "\\n\\n--- data ---\\n" + JSON.stringify(e.data, null, 2) : "");
+          html += '<pre class="tiny" style="margin:2px 0 10px;padding:8px;background:rgba(127,127,127,.08);border-radius:6px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto">' + safe(full) + "</pre>";
+        }
+        return html;
       }).join("");
     }
+
+    $("agentEvents").addEventListener("click", (event) => {
+      const row = event.target.closest("[data-event-seq]");
+      if (!row) return;
+      const seq = Number(row.dataset.eventSeq);
+      if (expandedEvents.has(seq)) expandedEvents.delete(seq);
+      else expandedEvents.add(seq);
+      renderAgentEvents();
+    });
 
     async function pollAgentEvents() {
       const payload = await api("/api/agent-events?since=" + agentEventSince);
