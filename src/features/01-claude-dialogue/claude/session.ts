@@ -294,7 +294,7 @@ function recordSdkEvents(sessionId: string, msg: unknown): void {
       } else if (b.type === "thinking" && typeof b.thinking === "string") {
         recordAgentEvent(sessionId, "assistant_thinking", b.thinking);
       } else if (b.type === "tool_use") {
-        recordAgentEvent(sessionId, "tool_use", String(b.name ?? "(unknown)"), {
+        recordAgentEvent(sessionId, "tool_use", `${String(b.name ?? "(unknown)")} ${compactArgs(b.input)}`, {
           input: b.input,
         });
       } else if (b.type === "tool_result") {
@@ -337,8 +337,21 @@ function recordResultEvent(sessionId: string, msg: unknown): void {
   );
 }
 
-function toolResultText(content: unknown): string {
-  if (typeof content === "string") return content;
+/** One-line "k=v" summary of a tool call's input for the live event view. */
+function compactArgs(input: unknown): string {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) return "";
+  const pairs = Object.entries(input as Record<string, unknown>)
+    .slice(0, 6)
+    .map(([key, value]) => {
+      const text = typeof value === "string" ? value : JSON.stringify(value);
+      const short = (text ?? "").replace(/\s+/g, " ").slice(0, 60);
+      return `${key}=${short}`;
+    });
+  const summary = pairs.join(" ");
+  return summary ? `(${summary.slice(0, 140)})` : "";
+}
+
+function toolResultText(content: unknown): string {  if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const block of content) {
