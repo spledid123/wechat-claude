@@ -1,6 +1,6 @@
 ﻿# 一键安装开发/运行所需的全部依赖：
 #   1. Node 依赖（npm install，含构建 exe 所需的 electron 工具链）
-#   2. Python 预处理环境（uv 管理，仅 markitdown，约 290MB）
+#   2. Python 预处理环境（uv 管理：markitdown[all] + pymupdf，约 300MB）
 #
 # 用法（项目根目录）：
 #   powershell -ExecutionPolicy Bypass -File scripts/setup-deps.ps1
@@ -38,7 +38,7 @@ if (-not $uv) {
     }
     uv pip install -r scripts/preprocess-requirements.txt --python .venv/Scripts/python.exe
     if ($LASTEXITCODE -ne 0) { throw "uv pip install 失败 (exit=$LASTEXITCODE)。" }
-    Write-Host "Python 环境就绪：.venv（markitdown）" -ForegroundColor Green
+    Write-Host "Python 环境就绪：.venv（markitdown + pymupdf，扫描版 PDF 渲染可用）" -ForegroundColor Green
 }
 
 Write-Host ""
