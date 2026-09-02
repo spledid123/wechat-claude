@@ -1,11 +1,76 @@
 import fs from "node:fs";
 import path from "node:path";
+import AdmZip from "adm-zip";
 
 export interface PendingWechatFile {
   filePath: string;
   fileName: string;
   signature: string;
   kind: "image" | "file";
+}
+
+export interface OfficePackageValidation {
+  ok: boolean;
+  problems: string[];
+}
+
+/** Zip-based Office formats we validate before sending to WeChat. */
+const OFFICE_PACKAGE_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm"]);
+
+/** Legal top-level locations inside an OPC/Office package. */
+const ALLOWED_TOP_LEVEL = new Set([
+  "[content_types].xml",
+  "_rels",
+  "docprops",
+  "word",
+  "xl",
+  "ppt",
+  "customxml",
+]);
+
+/**
+ * Sanity-check generated Office files before they go out. Catches the
+ * "agent stuffed a stray file into the OOXML zip" failure mode that lenient
+ * readers tolerate but Word rejects with 无法读取的内容.
+ */
+export function validateOfficePackage(filePath: string): OfficePackageValidation {
+  const ext = path.extname(filePath).toLowerCase();
+  if (!OFFICE_PACKAGE_EXTENSIONS.has(ext)) {
+    return { ok: true, problems: [] };
+  }
+
+  let zip: AdmZip;
+  try {
+    zip = new AdmZip(filePath);
+  } catch {
+    return { ok: false, problems: ["不是有效的 zip/Office 包结构"] };
+  }
+
+  const problems: string[] = [];
+  const entries = zip.getEntries();
+
+  const ct = entries.find((e) => e.entryName.toLowerCase() === "[content_types].xml");
+  if (!ct) {
+    problems.push("缺少 [Content_Types].xml");
+  } else {
+    const text = ct.getData().toString("utf-8");
+    if (!text.includes("<Types") || (!text.includes("<Default ") && !text.includes("<Override "))) {
+      problems.push("[Content_Types].xml 内容异常");
+    }
+  }
+
+  const strays = entries
+    .filter((e) => !e.isDirectory)
+    .map((e) => e.entryName.replace(/\\/g, "/"))
+    .filter((name) => {
+      const top = name.includes("/") ? name.slice(0, name.indexOf("/")) : name;
+      return !ALLOWED_TOP_LEVEL.has(top.toLowerCase());
+    });
+  if (strays.length > 0) {
+    problems.push(`包含非法嵌入部件: ${strays.slice(0, 3).join(", ")}${strays.length > 3 ? " 等" : ""}`);
+  }
+
+  return { ok: problems.length === 0, problems };
 }
 
 interface SentState {

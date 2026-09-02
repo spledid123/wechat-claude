@@ -254,6 +254,10 @@ export function buildDocumentSkillsInstruction(): string {
     "packages inside the workspace (e.g. npm install pptxgenjs).",
     "Save the finished file into working/output_weixin/ — the bridge sends",
     "everything placed there back to the WeChat user automatically.",
+    "Office hygiene: after generating .docx/.xlsx/.pptx, run the skill's",
+    "postcheck script when available; never stuff stray files into an OOXML",
+    "zip — repack only with the skill's unpack/pack scripts. The bridge",
+    "validates Office packages before sending and blocks broken ones.",
   ].join("\n");
 }
 

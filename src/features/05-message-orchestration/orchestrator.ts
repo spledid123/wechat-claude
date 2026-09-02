@@ -212,6 +212,9 @@ export class MessageOrchestrator {
       t === "/new"
       || t === "/help"
       || t === "/list"
+      || t === "/stop"
+      || t === "停止"
+      || t === "终止"
       || t === "对话存档"
       || t === "存档"
       || /^(\/*switch|切换对话)\s+\d+$/.test(t)

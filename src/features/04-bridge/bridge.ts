@@ -24,7 +24,7 @@ import { getRootLogger } from "../../runtime/logger.js";
 import { downloadFromCdn } from "../02-wechat-connectivity/wechat/media.js";
 import type { ParsedMessage } from "../02-wechat-connectivity/wechat/poller.js";
 import { extractMessageItemText } from "../02-wechat-connectivity/wechat/poller.js";
-import { collectPendingWechatFiles, markWechatFilesSent } from "./output-weixin.js";
+import { collectPendingWechatFiles, markWechatFilesSent, validateOfficePackage } from "./output-weixin.js";
 import type { SchedulerEngine } from "../06-scheduler/scheduler.js";
 import path from "node:path";
 
@@ -326,6 +326,15 @@ export class Bridge {
   private async handleCommand(text: string, fromUserId: string): Promise<string | null> {
     const t = text.trim();
 
+    if (t === "/stop" || t === "停止" || t === "终止") {
+      const active = this.sm.getActiveSession();
+      if (active && this.claude.getSessionStatus(active.id).isProcessing) {
+        this.claude.cancelSession(active.id);
+        return "已请求终止当前正在处理的 AI 任务，几秒内生效。";
+      }
+      return "当前没有正在处理的 AI 任务。";
+    }
+
     if (t === "/new" || t === "新对话" || t === "开始新对话") {
       const active = this.sm.getActiveSession();
       if (active) this.sm.closeSession(active.id, "user_command");
@@ -337,6 +346,7 @@ export class Bridge {
       return [
         "可用命令：",
         "/new - 新建会话",
+        "/stop - 强制终止正在处理的 AI 任务",
         "/list - 显示对话存档列表",
         "/switch <序号> - 切换到指定对话",
         "/tasks - 显示定时任务列表",
@@ -486,6 +496,7 @@ export class Bridge {
     const lastPage = render.start + render.rendered - 1;
     const lines = [
       `该 PDF 为扫描版（无文本层），已用视觉识别转录第 ${render.start}-${lastPage} 页（共 ${render.total} 页）。`,
+      "请在本次回复中明确告知用户：这是扫描版 PDF、你已读到第几页、共几页，其余部分可以按需继续读取。",
     ];
 
     const nextPage = lastPage + 1;
@@ -809,7 +820,17 @@ export class Bridge {
       return;
     }
 
-    for (const file of pendingFiles) {
+    // Guardrail: never send an Office file that would make Word show
+    // "发现无法读取的内容" — the classic cause is a stray part stuffed
+    // into the OOXML zip by an agent repack step.
+    const validated = pendingFiles.map((file) => ({
+      file,
+      validation: validateOfficePackage(file.filePath),
+    }));
+    const sendable = validated.filter((v) => v.validation.ok).map((v) => v.file);
+    const rejected = validated.filter((v) => !v.validation.ok);
+
+    for (const file of sendable) {
       const sent = await this.sendAttachment({
         toUserId,
         contextToken,
@@ -846,6 +867,24 @@ export class Bridge {
       }
     }
 
+    // Mark rejected files as processed too, so they are not retried forever.
     markWechatFilesSent(session.cwd, pendingFiles);
+
+    if (rejected.length > 0) {
+      const lines = rejected.map(
+        (r) => `- ${r.file.fileName}：${r.validation.problems.join("；")}`,
+      );
+      try {
+        await this.sendText({
+          toUserId,
+          contextToken,
+          text: "⚠️ 以下生成文件未通过完整性校验，已阻止发送（避免你收到 Word 打不开的损坏文件）：\n"
+            + lines.join("\n")
+            + "\n文件保留在工作区，可回复让 AI 修复后重新生成。",
+        });
+      } catch (err) {
+        getRootLogger().warn(`validation warning send failed: ${String(err)}`);
+      }
+    }
   }
 }
