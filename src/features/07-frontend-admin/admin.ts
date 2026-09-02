@@ -1448,6 +1448,12 @@ function renderAdminPage(): string {
         return;
       }
       box.classList.remove("muted");
+      // 重渲染会销毁节点——先记下各展开块的滚动位置，渲染后按 seq 恢复，
+      // 否则调试时正在看的段落每秒被顶回顶部。
+      const scrollMemory = new Map();
+      box.querySelectorAll("pre[data-event-seq]").forEach((pre) => {
+        scrollMemory.set(pre.dataset.eventSeq, pre.scrollTop);
+      });
       box.innerHTML = agentEventRows.slice(0, 50).map((e) => {
         const time = String(e.time).slice(11, 19);
         const label = eventLabels[e.type] || e.type;
@@ -1462,10 +1468,14 @@ function renderAdminPage(): string {
         if (open) {
           const full = "[" + label + "] " + String(e.detail || "")
             + (e.data ? "\\n\\n--- data ---\\n" + JSON.stringify(e.data, null, 2) : "");
-          html += '<pre class="tiny" style="margin:2px 0 10px;padding:8px;background:rgba(127,127,127,.08);border-radius:6px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto">' + safe(full) + "</pre>";
+          html += '<pre data-event-seq="' + e.seq + '" class="tiny" style="margin:2px 0 10px;padding:8px;background:rgba(127,127,127,.08);border-radius:6px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto">' + safe(full) + "</pre>";
         }
         return html;
       }).join("");
+      box.querySelectorAll("pre[data-event-seq]").forEach((pre) => {
+        const top = scrollMemory.get(pre.dataset.eventSeq);
+        if (top != null) pre.scrollTop = top;
+      });
     }
 
     $("agentEvents").addEventListener("click", (event) => {
@@ -1480,6 +1490,7 @@ function renderAdminPage(): string {
     async function pollAgentEvents() {
       const payload = await api("/api/agent-events?since=" + agentEventSince);
       agentEventSince = payload.lastSeq;
+      if (!payload.events.length) return; // 无新事件不重渲染，别打断正在看的滚动位置
       for (const event of payload.events) agentEventRows.unshift(event);
       if (agentEventRows.length > 50) agentEventRows.length = 50;
       renderAgentEvents();
