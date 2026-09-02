@@ -29,6 +29,27 @@ export interface MessageTextRecord {
 }
 
 export class ConversationManager {
+  /** Internal numeric user id for an external WeChat user id (null if unknown). */
+  findUserIdByWechatId(wechatUserId: string): number | null {
+    const row = queryOne<{ id: number }>(
+      "SELECT id FROM users WHERE wechat_user_id = ?",
+      [wechatUserId],
+    );
+    return row?.id ?? null;
+  }
+
+  /** The user's latest active session id, if any (used to tag index rows). */
+  findActiveSessionIdForUser(userId: number): string | null {
+    const row = queryOne<{ id: string }>(
+      `SELECT id FROM sessions
+       WHERE user_id = ? AND status = 'active'
+       ORDER BY last_active_at DESC
+       LIMIT 1`,
+      [userId],
+    );
+    return row?.id ?? null;
+  }
+
   /**
    * Add a message to the conversation log.
    * Auto-increments `seq_in_session` for the session.

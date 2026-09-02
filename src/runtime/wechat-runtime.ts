@@ -14,11 +14,32 @@ import {
 } from "../features/05-message-orchestration/orchestrator.js";
 import type { SendAttachmentFunc } from "../features/04-bridge/bridge.js";
 
-export function createWechatSendText(botToken: string): SendTextLike {
+export interface OutboundTextSent {
+  toUserId: string;
+  /** The text of THIS bubble — one reply may be split into several. */
+  bubbleText: string;
+  /** Server-side message id of this bubble; absent if the API did not return one. */
+  msgId?: string;
+}
+
+export function createWechatSendText(
+  botToken: string,
+  onSent?: (info: OutboundTextSent) => void,
+): SendTextLike {
   return async ({ toUserId, contextToken, text }) => {
     const bubbles = splitLongText(text);
     for (let i = 0; i < bubbles.length; i += 1) {
-      await sendText({ toUserId, contextToken, text: bubbles[i] }, botToken);
+      const sent = await sendText({ toUserId, contextToken, text: bubbles[i] }, botToken);
+      // Long replies split into bubbles, each with its own server msg_id —
+      // and a later WeChat quote references the quoted BUBBLE's id. Report
+      // per bubble so the quote index maps id → that bubble's text.
+      if (onSent) {
+        try {
+          onSent({ toUserId, bubbleText: bubbles[i], msgId: sent.msgId });
+        } catch {
+          // Indexing is best-effort; it must never fail the send itself.
+        }
+      }
       if (i < bubbles.length - 1) {
         await sleep(500);
       }

@@ -20,6 +20,7 @@ import {
   createWechatSendAttachment,
   createWechatSendText,
   createWechatTypingService,
+  type OutboundTextSent,
 } from "./wechat-runtime.js";
 import { buildRuntimePaths, type RuntimePaths } from "./paths.js";
 import { createRuntimeLogger, setRootLogger, setDiagnosticsDir, type RuntimeLogger } from "./logger.js";
@@ -155,8 +156,30 @@ export class WechatClaudeService {
         dataDir: this.paths.dataDir,
         getMaxChars: () => readConfig(this.paths.dataDir).preprocessMaxChars,
       });
+      // Index every outbound text bubble under its server msg_id, so a later
+      // WeChat quote of OUR OWN reply resolves via the quote index. Covers all
+      // send paths at once (bridge replies, command replies, scanned-PDF
+      // progress, scheduler notifications, MCP notify) — they all funnel
+      // through this single send function.
+      const indexOutboundText = (info: OutboundTextSent) => {
+        try {
+          if (!info.msgId) return;
+          const userId = cm.findUserIdByWechatId(info.toUserId);
+          if (!userId) return; // Unknown recipient: nothing to attach the quote to.
+          cm.saveMessageText({
+            msgId: info.msgId,
+            userId,
+            sessionId: cm.findActiveSessionIdForUser(userId),
+            itemType: "text",
+            textContent: info.bubbleText,
+          });
+        } catch (err) {
+          this.logger.warn(`outbound text indexing failed: ${String(err)}`);
+        }
+      };
+
       const sendWechatText: ReturnType<typeof createWechatSendText> = botToken
-        ? createWechatSendText(botToken)
+        ? createWechatSendText(botToken, indexOutboundText)
         : async () => {
           throw new Error("Bot token is not configured. Open the admin panel and scan a login QR first.");
         };
