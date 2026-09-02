@@ -168,6 +168,37 @@ export type ExtractResult =
   | { ok: true; text: string }
   | { ok: false; error: string };
 
+/** Per-channel endpoint override for vision calls (independent provider). */
+interface VisionEndpointOverride {
+  baseUrl?: string;
+  apiKey?: string;
+  authToken?: string;
+}
+
+let visionEndpointOverride: VisionEndpointOverride | null = null;
+
+/**
+ * Point the vision channel at its own provider (e.g. agent on DeepSeek,
+ * vision on GLM). Any unset field falls back to the main ANTHROPIC_* env;
+ * once the override sets a credential, its credentials are used exclusively
+ * so two providers' keys never mix in one request.
+ */
+export function applyVisionEndpointOverride(config: {
+  visionBaseUrl?: string;
+  visionApiKey?: string;
+  visionAuthToken?: string;
+}): void {
+  if (!config.visionBaseUrl && !config.visionApiKey && !config.visionAuthToken) {
+    visionEndpointOverride = null;
+    return;
+  }
+  visionEndpointOverride = {
+    baseUrl: config.visionBaseUrl || undefined,
+    apiKey: config.visionApiKey || undefined,
+    authToken: config.visionAuthToken || undefined,
+  };
+}
+
 /** Convenience wrapper: prepare a file and extract its content in one call. */
 export async function extractImageFileWithVision(
   filePath: string,
@@ -193,17 +224,27 @@ export async function extractImageWithVision(
   payload: ImagePayload,
   options: { model: string; timeoutMs?: number },
 ): Promise<ExtractResult> {
-  const baseUrl = (process.env.ANTHROPIC_BASE_URL ?? "https://api.deepseek.com/anthropic")
-    .replace(/\/+$/, "");
-  const url = `${baseUrl}/v1/messages`;
+  const override = visionEndpointOverride;
+  let baseUrl = process.env.ANTHROPIC_BASE_URL ?? "https://api.deepseek.com/anthropic";
+  let apiKey = process.env.ANTHROPIC_API_KEY;
+  let authToken = process.env.ANTHROPIC_AUTH_TOKEN;
+  if (override) {
+    if (override.baseUrl) baseUrl = override.baseUrl;
+    // Once the channel defines a credential, use its credentials exclusively.
+    if (override.apiKey || override.authToken) {
+      apiKey = override.apiKey;
+      authToken = override.authToken;
+    }
+  }
+  const url = `${baseUrl.replace(/\/+$/, "")}/v1/messages`;
   const timeoutMs = options.timeoutMs ?? readTimeoutEnv();
 
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (process.env.ANTHROPIC_API_KEY) {
-    headers["x-api-key"] = process.env.ANTHROPIC_API_KEY;
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
   }
-  if (process.env.ANTHROPIC_AUTH_TOKEN) {
-    headers.authorization = `Bearer ${process.env.ANTHROPIC_AUTH_TOKEN}`;
+  if (authToken) {
+    headers.authorization = `Bearer ${authToken}`;
   }
   if (!headers["x-api-key"] && !headers.authorization) {
     return { ok: false, error: "未配置 ANTHROPIC_API_KEY 或 ANTHROPIC_AUTH_TOKEN" };

@@ -25,8 +25,10 @@ import { downloadFromCdn } from "../02-wechat-connectivity/wechat/media.js";
 import type { ParsedMessage } from "../02-wechat-connectivity/wechat/poller.js";
 import { extractMessageItemText } from "../02-wechat-connectivity/wechat/poller.js";
 import { collectPendingWechatFiles, markWechatFilesSent, validateOfficePackage } from "./output-weixin.js";
+import { recordAgentEvent } from "../01-claude-dialogue/claude/events.js";
 import type { SchedulerEngine } from "../06-scheduler/scheduler.js";
 import path from "node:path";
+import fs from "node:fs";
 
 /** DeepSeek accepts many more; this keeps single requests lean. */
 const MAX_IMAGES_PER_REQUEST = 10;
@@ -208,6 +210,7 @@ export class Bridge {
                   contextToken: input.contextToken,
                   text,
                 });
+                recordAgentEvent(session.id, "msg_out", text.replace(/\s+/g, " ").slice(0, 140));
               }
             : undefined;
           const fallback = await this.runScannedPdfExtraction(dlPath, session.cwd, notify);
@@ -239,6 +242,17 @@ export class Bridge {
           truncated,
           scannedNotice,
         });
+        recordAgentEvent(session.id, "file_done", `${fileName}：${
+          preprocessingError
+            ? `处理失败（${preprocessingError.slice(0, 80)}）`
+            : scannedNotice
+              ? `扫描版→视觉转录 ${extractedText?.length ?? 0} 字符${truncated ? "（部分页）" : ""}`
+              : transcribedText
+                ? `语音转写 ${transcribedText.length} 字符`
+                : extractedText
+                  ? `提取 ${extractedText.length} 字符${truncated ? "（已截断）" : ""}`
+                  : "无文本"
+        }`);
 
         const indexedText = transcribedText ?? extractedText;
         if (ref.msgId && indexedText?.trim()) {
@@ -262,6 +276,11 @@ export class Bridge {
 
     const historyText = this.cm.getContextMessages(session.id, 6);
     const summary = this.sm.getLastClosedSessionSummary();
+    recordAgentEvent(
+      session.id,
+      "msg_in",
+      `收到 ${inputs.length} 条消息：${userParts.join(" | ").replace(/\s+/g, " ").slice(0, 140)}`,
+    );
     const ctx: PromptContext = {
       userText: userParts.join("\n<<<MSG>>>\n"),
       historyText: historyText || undefined,
@@ -311,6 +330,7 @@ export class Bridge {
         contextToken: first.contextToken,
         text: reply,
       });
+      recordAgentEvent(session.id, "msg_out", reply.replace(/\s+/g, " ").slice(0, 140));
     }
 
     await this.deliverOutputFiles(session, first.fromUserId, first.contextToken);
@@ -837,6 +857,7 @@ export class Bridge {
         filePath: file.filePath,
         kind: file.kind,
       });
+      recordAgentEvent(session.id, "file_out", `${file.fileName}（${file.kind === "image" ? "图片" : "文件"}，${Math.round(fs.statSync(file.filePath).size / 1024)}KB）`);
 
       // Index outbound images so the user can quote them back later. The
       // file is still on disk in the workspace; extraction is fire-and-forget

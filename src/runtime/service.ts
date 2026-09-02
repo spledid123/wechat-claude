@@ -6,6 +6,8 @@ import {
 } from "../features/01-claude-dialogue/db/connection.js";
 import { ClaudeManager } from "../features/01-claude-dialogue/claude/manager.js";
 import { createBridgeMcpServer } from "../features/01-claude-dialogue/claude/bridge-tools.js";
+import { recordAgentEvent } from "../features/01-claude-dialogue/claude/events.js";
+import { applyVisionEndpointOverride } from "../features/03-file-preprocessing/vision.js";
 import { SessionManager } from "../features/01-claude-dialogue/session/manager.js";
 import { ConversationManager } from "../features/01-claude-dialogue/conversation/manager.js";
 import { FilePreprocessor } from "../features/03-file-preprocessing/preprocessor.js";
@@ -134,6 +136,7 @@ export class WechatClaudeService {
 
       // config.json's API overrides (if any) take effect over .env values.
       applyAnthropicEnvOverrides(readConfig(this.paths.dataDir));
+      applyVisionEndpointOverride(readConfig(this.paths.dataDir));
 
       const cleanup = runStartupStorageCleanup(this.paths.workspaceBase);
       if (cleanup.turnsDeleted > 0 || cleanup.closedSessionsDeleted > 0 || cleanup.workspacesRemoved > 0) {
@@ -178,7 +181,10 @@ export class WechatClaudeService {
               sessionCwd: session.cwd,
               preprocessor: pp,
               getConfig: () => readConfig(this.paths.dataDir),
-              notify: (text) => sendWechatText({ toUserId: userId, contextToken, text }),
+              notify: async (text) => {
+                await sendWechatText({ toUserId: userId, contextToken, text });
+                recordAgentEvent(session.id, "msg_out", text.replace(/\s+/g, " ").slice(0, 140));
+              },
             }),
           );
           return result.text;
@@ -212,12 +218,15 @@ export class WechatClaudeService {
       }: {
         fromUserId: string;
         contextToken: string;
-        session: { cwd: string };
+        session: { cwd: string; sessionId: string };
       }) => createBridgeMcpServer({
         sessionCwd: session.cwd,
         preprocessor: pp,
         getConfig: () => readConfig(this.paths.dataDir),
-        notify: (text) => sendWechatText({ toUserId: fromUserId, contextToken, text }),
+        notify: async (text) => {
+          await sendWechatText({ toUserId: fromUserId, contextToken, text });
+          recordAgentEvent(session.sessionId, "msg_out", text.replace(/\s+/g, " ").slice(0, 140));
+        },
       });
       const bridge = new Bridge(
         this.claude,

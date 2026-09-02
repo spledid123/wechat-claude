@@ -24,6 +24,7 @@ import type {
 import { readConfig, writeConfig, applyAnthropicEnvOverrides, type RuntimeConfig } from "../../runtime/config.js";
 import type { AgentStatusSnapshot } from "../01-claude-dialogue/claude/manager.js";
 import { drainAgentEvents } from "../01-claude-dialogue/claude/events.js";
+import { applyVisionEndpointOverride } from "../03-file-preprocessing/vision.js";
 
 export interface AdminAuthProvider {
   getQrCode(): Promise<QrCodeResponse>;
@@ -339,6 +340,11 @@ export class AdminServer {
             apiKeyTail: tail(config.anthropicApiKey ?? process.env.ANTHROPIC_API_KEY),
             authTokenTail: tail(config.anthropicAuthToken ?? process.env.ANTHROPIC_AUTH_TOKEN),
           },
+          vision: {
+            baseUrl: config.visionBaseUrl ?? "",
+            apiKeyTail: tail(config.visionApiKey),
+            authTokenTail: tail(config.visionAuthToken),
+          },
         },
       });
       return;
@@ -366,10 +372,14 @@ export class AdminServer {
         anthropicBaseUrl: keepSecretOr(body.anthropicBaseUrl, current.anthropicBaseUrl),
         anthropicApiKey: keepSecretOr(body.anthropicApiKey, current.anthropicApiKey),
         anthropicAuthToken: keepSecretOr(body.anthropicAuthToken, current.anthropicAuthToken),
+        visionBaseUrl: keepSecretOr(body.visionBaseUrl, current.visionBaseUrl),
+        visionApiKey: keepSecretOr(body.visionApiKey, current.visionApiKey),
+        visionAuthToken: keepSecretOr(body.visionAuthToken, current.visionAuthToken),
       };
       writeConfig(this.options.dataDir, next);
       // API overrides take effect immediately (vision HTTP + SDK subprocess env).
       applyAnthropicEnvOverrides(next);
+      applyVisionEndpointOverride(next);
       this.sendJson(res, 200, { ok: true });
       return;
     }
@@ -1084,8 +1094,13 @@ function renderAdminPage(): string {
             <label>API Key（x-api-key）<input name="anthropicApiKey" type="password" autocomplete="off" placeholder="留空保持不变"></label>
             <label>Auth Token（Bearer）<input name="anthropicAuthToken" type="password" autocomplete="off" placeholder="留空保持不变"></label>
           </div>
+          <div class="grid2">
+            <label>视觉通道 Base URL<input name="visionBaseUrl" placeholder="留空跟随主接入（可填不同供应商）"></label>
+            <label>视觉通道 API Key<input name="visionApiKey" type="password" autocomplete="off" placeholder="留空跟随主接入"></label>
+            <label>视觉通道 Auth Token<input name="visionAuthToken" type="password" autocomplete="off" placeholder="留空跟随主接入"></label>
+          </div>
           <div class="tiny">窗口：消息发出后等待合并的时间，来新消息会重新计时；上限：一批消息累计多久后强制发送。对下一条消息生效，无需重启。</div>
-          <div class="tiny">API 接入：保存在本机 config.json，优先于 .env，保存后立即生效。密钥不回显，仅显示末 4 位。</div>
+          <div class="tiny">API 接入：保存在本机 config.json，优先于 .env，保存后立即生效。密钥不回显，仅显示末 4 位。视觉通道（图片/扫描页识别）可指向不同供应商，留空时与主接入共用。</div>
           <button type="submit">保存设置</button>
         </form>
       </div>
@@ -1330,6 +1345,11 @@ function renderAdminPage(): string {
         ? "已配置 " + settings.anthropic.apiKeyTail + "，留空保持不变" : "未配置，留空保持不变";
       form.elements.anthropicAuthToken.placeholder = settings.anthropic.authTokenTail
         ? "已配置 " + settings.anthropic.authTokenTail + "，留空保持不变" : "未配置，留空保持不变";
+      form.elements.visionBaseUrl.value = settings.vision.baseUrl || "";
+      form.elements.visionApiKey.placeholder = settings.vision.apiKeyTail
+        ? "已配置 " + settings.vision.apiKeyTail + "，留空跟随主接入" : "留空跟随主接入";
+      form.elements.visionAuthToken.placeholder = settings.vision.authTokenTail
+        ? "已配置 " + settings.vision.authTokenTail + "，留空跟随主接入" : "留空跟随主接入";
     }
 
     async function loadQuoteFiles() {
@@ -1395,6 +1415,9 @@ function renderAdminPage(): string {
           anthropicBaseUrl: form.get("anthropicBaseUrl") || undefined,
           anthropicApiKey: form.get("anthropicApiKey") || undefined,
           anthropicAuthToken: form.get("anthropicAuthToken") || undefined,
+          visionBaseUrl: form.get("visionBaseUrl") || undefined,
+          visionApiKey: form.get("visionApiKey") || undefined,
+          visionAuthToken: form.get("visionAuthToken") || undefined,
         }),
       });
       await loadSettings();
@@ -1435,6 +1458,7 @@ function renderAdminPage(): string {
     const eventLabels = {
       query_start: "开始", assistant_text: "文本", assistant_thinking: "思考",
       tool_use: "工具调用", tool_result: "工具结果", result: "完成", query_end: "结束",
+      msg_in: "收到消息", file_done: "文件处理", msg_out: "已发消息", file_out: "已发文件",
     };
     let agentEventSince = 0;
     const agentEventRows = [];

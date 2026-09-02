@@ -16,7 +16,12 @@ export type AgentEventType =
   | "tool_use"
   | "tool_result"
   | "result"
-  | "query_end";
+  | "query_end"
+  /** Bridge-level events: WeChat traffic and file preprocessing. */
+  | "msg_in"
+  | "file_done"
+  | "msg_out"
+  | "file_out";
 
 export interface AgentEvent {
   seq: number;

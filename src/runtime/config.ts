@@ -35,6 +35,12 @@ export interface RuntimeConfig {
   anthropicApiKey?: string;
   /** Optional auth token override (Bearer). Secret — never returned to the panel. */
   anthropicAuthToken?: string;
+  /** Optional independent vision channel (different provider than the agent). */
+  visionBaseUrl?: string;
+  /** Vision channel API key — falls back to the main key when unset. */
+  visionApiKey?: string;
+  /** Vision channel auth token — falls back to the main token when unset. */
+  visionAuthToken?: string;
 }
 
 export const DEFAULT_CONFIG: RuntimeConfig = {
@@ -95,6 +101,9 @@ export function readConfig(dataDir: string): RuntimeConfig {
       anthropicBaseUrl: nonEmptyStringOrNone(raw.anthropicBaseUrl),
       anthropicApiKey: nonEmptyStringOrNone(raw.anthropicApiKey),
       anthropicAuthToken: nonEmptyStringOrNone(raw.anthropicAuthToken),
+      visionBaseUrl: nonEmptyStringOrNone(raw.visionBaseUrl),
+      visionApiKey: nonEmptyStringOrNone(raw.visionApiKey),
+      visionAuthToken: nonEmptyStringOrNone(raw.visionAuthToken),
     };
   } catch {
     // Corrupt or partially written file — fall back to defaults.
