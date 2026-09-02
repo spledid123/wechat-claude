@@ -727,6 +727,27 @@ export class Bridge {
       return { unresolvedLabel: label };
     }
 
+    // Bot replies have no entry in the quote index (the send API returns no
+    // msg_id to index under). Recover them by time: the quote carries the
+    // quoted message's server create_time_ms, which lands within seconds of
+    // the outbound conversations row written just before the send.
+    if (quoted.createTimeMs) {
+      const matched = this.cm.findOutboundTextNear(userId, quoted.createTimeMs);
+      if (matched && !PLACEHOLDER_TEXTS.has(matched.trim())) {
+        if (quoted.msgId) {
+          // Cache the resolution: repeat quotes of the same message then hit
+          // the index directly instead of re-running the time match.
+          this.cm.saveMessageText({
+            msgId: quoted.msgId,
+            userId,
+            itemType: "text",
+            textContent: matched,
+          });
+        }
+        return { text: matched };
+      }
+    }
+
     const summary = quoted.text?.trim();
     if (summary && !PLACEHOLDER_TEXTS.has(summary)) {
       return { text: summary };

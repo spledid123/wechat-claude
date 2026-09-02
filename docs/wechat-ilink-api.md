@@ -328,12 +328,13 @@ POST /ilink/bot/sendmessage
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `ret` | number | 返回码 |
-| `msg_id` | string, optional | 发送后的消息 ID |
+| `msg_id` | string, optional | 发送后的消息 ID（**实测从未返回**，文本/图片/文件均是） |
 
 踩坑：
 
 | 问题 | 处理 |
 | --- | --- |
+| **响应不带 msg_id** | 出站消息无法按 id 建立引用索引；引用 AI 回复的解析改用时间就近匹配（引用携带被引消息的 `create_time_ms`，与出站记录落库时间差仅数秒） |
 | `context_token` 错误会导致发送异常或无感失败 | 回复、定时任务和管理后台创建任务都要保存可用 context token |
 | 长文本一次发送容易失败或体验差 | 当前按约 1400 字拆气泡，并在气泡之间延迟 500ms |
 | `from_user_id` 不要填 bot ID | 当前实测 bot 发送时为空字符串 |

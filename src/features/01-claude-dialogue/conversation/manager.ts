@@ -51,6 +51,33 @@ export class ConversationManager {
   }
 
   /**
+   * Closest outbound reply to the given server-side timestamp. The send API
+   * returns no msg_id, so quotes of OUR OWN replies cannot resolve by id;
+   * instead the quote carries the quoted message's create_time_ms, which
+   * lands within seconds of the outbound conversations row (written just
+   * before the send). Window [-30s, +10s] absorbs multi-bubble replies.
+   */
+  findOutboundTextNear(userId: number, epochMs: number): string | null {
+    const epochSec = Math.floor(epochMs / 1000);
+    const row = queryOne<{ text_content: string | null }>(
+      `SELECT text_content
+       FROM conversations
+       WHERE user_id = ? AND direction = 'outbound'
+         AND created_at >= ? AND created_at <= ?
+       ORDER BY ABS(CAST(strftime('%s', created_at) AS INTEGER) - ?)
+       LIMIT 1`,
+      [
+        userId,
+        new Date(epochMs - 30_000).toISOString(),
+        new Date(epochMs + 10_000).toISOString(),
+        epochSec,
+      ],
+    );
+    const text = row?.text_content?.trim();
+    return text ? text : null;
+  }
+
+  /**
    * Add a message to the conversation log.
    * Auto-increments `seq_in_session` for the session.
    * Returns the new row's id.

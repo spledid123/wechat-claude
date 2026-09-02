@@ -35,6 +35,8 @@ export interface ParsedMessage {
     itemType?: string;
     fileName?: string;
     mediaKey?: string;
+    /** Server-side timestamp of the QUOTED message (nested create_time_ms). */
+    createTimeMs?: number;
   };
   itemMeta: Array<{
     msgId?: string;
@@ -177,6 +179,7 @@ export function parseMessage(msg: WeixinMessage): ParsedMessage {
           itemType: nested?.type ? itemTypeName(nested.type) : undefined,
           fileName: nested?.file_item?.file_name,
           mediaKey: extractMediaKey(nested),
+          createTimeMs: nested?.create_time_ms,
         };
       }
     }

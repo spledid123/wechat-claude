@@ -5,6 +5,7 @@
  */
 
 import { randomWechatUin, generateClientId } from "./crypto.js";
+import { getRootLogger } from "../../../runtime/logger.js";
 import type {
   QrCodeResponse,
   QrCodeStatusResponse,
@@ -144,7 +145,7 @@ export async function sendMessage(
   body: SendMessageRequest,
   botToken: string,
 ): Promise<SendMessageResponse> {
-  return request<SendMessageResponse>("/ilink/bot/sendmessage", {
+  const res = await request<SendMessageResponse>("/ilink/bot/sendmessage", {
     method: "POST",
     headers: authHeaders(botToken),
     body: {
@@ -152,7 +153,19 @@ export async function sendMessage(
       base_info: body.base_info ?? { channel_version: CHANNEL_VERSION },
     },
   });
+  // Ground-truth diagnostic: msg_id is documented as optional and in practice
+  // has never come back (outbound quote indexing depends on it). Log the real
+  // response shape once per process so a renamed/added id field would surface.
+  if (!res.msg_id && !warnedNoMsgId) {
+    warnedNoMsgId = true;
+    getRootLogger().warn(
+      `sendmessage response carries no msg_id; response fields: ${Object.keys(res).join(",") || "(empty)"}`,
+    );
+  }
+  return res;
 }
+
+let warnedNoMsgId = false;
 
 // --------------- CDN Upload ---------------
 

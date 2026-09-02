@@ -66,7 +66,7 @@ docs/                                  文档
 - **文档生成参考资料**：会话工作区初始化时把仓库 `skills/`（minimax-xlsx / pptx-generator / docx，纯文件约 1MB）和 `scripts/preprocess.py`（→ `tools/`）复制进工作区。不走 SDK 的 skills 机制——AI 用已放行的 Read/Bash 直接使用；生成物写入 `working/output_weixin/` 即自动发回。
 
 ### 3.3 引用机制（04 + 01）
-`message_text_index` 按**用户全局**存储每条消息的解析文本（跨对话可查）。入站消息收信时入库；**出站文本回复发送后也逐气泡入库**（`createWechatSendText` 每气泡回调 → service 层查 `users` 表映射内部 userId → upsert；长回复拆分的每个气泡有自己的服务端 msg_id，引用哪个气泡就解析哪个气泡）——因此引用 AI 自己的回复同样可解析。agent 发出的图片发送后异步提取入库，同样可被引用。引用解析两级：服务端 msg_id 精确匹配 → 失败注入"未能解析"提示（**不吞消息**）。
+`message_text_index` 按**用户全局**存储每条消息的解析文本（跨对话可查）。入站消息收信时入库；引用解析首选服务端 msg_id 精确匹配。**引用 AI 自己的回复**：sendmessage 响应实测不返回 msg_id，无法按 id 索引出站文本，改为**时间就近匹配**——引用消息携带被引消息的服务端 `create_time_ms`，与出站 conversations 行（发送前数秒写入）就近匹配（窗口 [-30s,+10s] 取最近），命中后回填索引供重复引用直达；agent 发出的图片同理走索引。解析失败注入"未能解析"提示（**不吞消息**）。
 
 ### 3.4 Agent 会话（01）
 每微信会话一个工作区；对话记忆 = 注入最近 6 条历史（每条截 500 字），SDK 每次独立查询（无 resume）。会话对象轻量、模型可热切换（config 变化即重建）、闲置 1 小时淘汰。权限：写入限工作区，Bash 写意图拦截（Windows 无 OS 沙箱）——完整规则见 [Agent 权限模型详解](permissions.md)。
