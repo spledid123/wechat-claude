@@ -486,7 +486,7 @@ export class AdminServer {
         .map((line) => {
           const match = line.match(/^(\S+)\s+(ERROR|WARN)\s+(.*)$/);
           return match
-            ? { time: match[1].slice(11, 19), level: match[2], text: match[3].slice(0, 160) }
+            ? { time: formatLogClock(match[1], this.options.scheduler.getTimezone()), level: match[2], text: match[3].slice(0, 160) }
             : { time: "", level: "WARN", text: line.slice(0, 160) };
         });
     } catch {
@@ -794,6 +794,19 @@ function formatLocalDateTime(date: Date, timezone: string): string {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+/** Service log lines carry UTC ISO stamps — render them in the scheduler's zone. */
+function formatLogClock(stamp: string, timezone: string): string {
+  const date = new Date(stamp);
+  if (Number.isNaN(date.getTime())) return stamp.slice(11, 19);
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: timezone,
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -1124,7 +1137,22 @@ function renderAdminPage(): string {
       const text = String(value ?? "");
       return text.length > 160 ? text.slice(0, 157) + "..." : text;
     };
-    const clock = (iso) => safe(String(iso ?? "").replace("T"," ").slice(5,19));
+    // 后端存的 ISO 时间戳一律是 UTC——先 new Date() 解析再取本地字段，
+    // 直接截字符串会把所有时间显示成 UTC（慢 8 小时）。
+    const fmtLocal = (d) => {
+      const p = (n) => String(n).padStart(2, "0");
+      return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+    };
+    const clock = (iso) => {
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? safe(String(iso ?? "")) : safe(fmtLocal(d));
+    };
+    const hm = (v) => {
+      const d = new Date(v);
+      if (isNaN(d.getTime())) return String(v ?? "").slice(11, 19);
+      const p = (n) => String(n).padStart(2, "0");
+      return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+    };
     const fmtNum = (n) => (typeof n === "number" && n > 0) ? (n >= 10000 ? (n / 1000).toFixed(1) + "k" : String(n)) : "-";
     const fmtTokens = (inp, out) => "入 " + fmtNum(inp) + " / 出 " + fmtNum(out);
 
@@ -1318,7 +1346,7 @@ function renderAdminPage(): string {
         <div class="row">
           <div class="row-main">
             <strong>\${safe(t.title)}</strong> <span class="pill">\${safe(t.status)}</span> <span class="pill">\${safe(t.mode)}</span>
-            <p>计划：\${t.scheduleType === "once" ? safe(t.runAt) : t.scheduleType === "daily" ? "每天 " + safe(t.timeOfDay) : "每周 " + safe(t.weekday) + " " + safe(t.timeOfDay)}；下次：<code>\${safe(t.nextRunAt)}</code></p>
+            <p>计划：\${t.scheduleType === "once" ? clock(t.runAt) : t.scheduleType === "daily" ? "每天 " + safe(t.timeOfDay) : "每周 " + safe(t.weekday) + " " + safe(t.timeOfDay)}；下次：<code>\${clock(t.nextRunAt)}</code></p>
             <p>\${safe(short(t.payloadText))}</p>
           </div>
           <button class="danger" data-delete-task="\${safe(t.id)}">删除</button>
@@ -1479,7 +1507,7 @@ function renderAdminPage(): string {
         scrollMemory.set(pre.dataset.eventSeq, pre.scrollTop);
       });
       box.innerHTML = agentEventRows.slice(0, 50).map((e) => {
-        const time = String(e.time).slice(11, 19);
+        const time = hm(e.time);
         const label = eventLabels[e.type] || e.type;
         const session = String(e.sessionId).slice(0, 8);
         const detail = String(e.detail || "").split("\\n")[0].slice(0, 160) || "—";
