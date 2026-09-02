@@ -1454,7 +1454,7 @@ function renderAdminPage(): string {
         const detail = String(e.detail || "").split("\\n")[0].slice(0, 160) || "—";
         return '<div class="tiny" style="display:flex;gap:8px;align-items:baseline;min-width:0">'
           + '<span style="color:var(--muted);flex:none">' + safe(time) + "</span>"
-          + "<span style=\"flex:none\">[" + safe(label) + "]</span>"
+          + '<span style="flex:none">[' + safe(label) + "]</span>"
           + '<span style="flex:none;color:var(--muted)">' + safe(session) + "</span>"
           + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + safe(detail) + "</span></div>";
       }).join("");
