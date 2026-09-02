@@ -28,6 +28,14 @@ const ALWAYS_DENY_TOOLS = new Set([
   "ExitWorktree",
 ]);
 
+/** In-process bridge MCP tools — handler-side effects are workspace-confined. */
+const BRIDGE_MCP_TOOLS = [
+  "mcp__bridge__extract_document",
+  "mcp__bridge__render_pdf_pages",
+  "mcp__bridge__read_scanned_pdf",
+  "mcp__bridge__transcribe_image",
+];
+
 const ALWAYS_ALLOW_TOOLS = new Set([
   "Read",
   "Glob",
@@ -42,6 +50,7 @@ const ALWAYS_ALLOW_TOOLS = new Set([
   "ListMcpResources",
   "ReadMcpResource",
   "Mcp",
+  ...BRIDGE_MCP_TOOLS,
 ]);
 
 const WRITE_TOOLS = new Set([

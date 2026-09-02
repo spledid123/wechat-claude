@@ -23,6 +23,7 @@ import type {
 } from "../02-wechat-connectivity/wechat/types.js";
 import { readConfig, writeConfig, applyAnthropicEnvOverrides, type RuntimeConfig } from "../../runtime/config.js";
 import type { AgentStatusSnapshot } from "../01-claude-dialogue/claude/manager.js";
+import { drainAgentEvents } from "../01-claude-dialogue/claude/events.js";
 
 export interface AdminAuthProvider {
   getQrCode(): Promise<QrCodeResponse>;
@@ -368,6 +369,16 @@ export class AdminServer {
       // API overrides take effect immediately (vision HTTP + SDK subprocess env).
       applyAnthropicEnvOverrides(next);
       this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/agent-events") {
+      const since = Number.parseInt(String(url.searchParams.get("since") ?? "0"), 10) || 0;
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      this.sendJson(res, 200, {
+        ok: true,
+        ...drainAgentEvents(since, sessionId || undefined),
+      });
       return;
     }
 
@@ -996,6 +1007,10 @@ function renderAdminPage(): string {
         <h2>AI 后端</h2>
         <div id="agent" class="stack muted">加载中…</div>
       </div>
+      <div class="card">
+        <h2>Agent 处理流程（实时）</h2>
+        <div id="agentEvents" class="stack muted" style="max-height:340px;overflow-y:auto">空闲</div>
+      </div>
       <div class="grid">
         <div class="card"><h2>登录二维码</h2><div id="auth" class="stack muted">加载中…</div></div>
         <div class="card"><h2>运行详情</h2><div id="status" class="stack muted">加载中…</div></div>
@@ -1110,7 +1125,7 @@ function renderAdminPage(): string {
       if (!force && loadedTabs.has(tab)) return Promise.resolve();
       loadedTabs.add(tab);
       const jobs = {
-        overview: () => Promise.all([loadStatus(), loadAgent(), loadAuth(), loadStorage(), loadErrors()]),
+        overview: () => Promise.all([loadStatus(), loadAgent(), loadAuth(), loadStorage(), loadErrors(), pollAgentEvents()]),
         conversations: () => loadSessions(),
         tasks: () => loadTasks(),
         settings: () => Promise.all([loadSettings(), loadQuoteFiles()]),
@@ -1410,6 +1425,49 @@ function renderAdminPage(): string {
         loadAgent().catch(() => undefined);
       }
     }, 5000);
+
+    // Agent 处理流程实时视图：1 秒增量拉取（仅概览页激活且页面可见时）
+    const eventLabels = {
+      query_start: "开始", assistant_text: "文本", assistant_thinking: "思考",
+      tool_use: "工具调用", tool_result: "工具结果", result: "完成", query_end: "结束",
+    };
+    let agentEventSince = 0;
+    const agentEventRows = [];
+
+    function renderAgentEvents() {
+      const box = $("agentEvents");
+      if (!agentEventRows.length) {
+        box.classList.add("muted");
+        box.innerHTML = '<span class="tiny">空闲</span>';
+        return;
+      }
+      box.classList.remove("muted");
+      box.innerHTML = agentEventRows.slice(0, 50).map((e) => {
+        const time = String(e.time).slice(11, 19);
+        const label = eventLabels[e.type] || e.type;
+        const session = String(e.sessionId).slice(0, 8);
+        const detail = String(e.detail || "").split("\\n")[0].slice(0, 160) || "—";
+        return '<div class="tiny" style="display:flex;gap:8px;align-items:baseline;min-width:0">'
+          + '<span style="color:var(--muted);flex:none">' + safe(time) + "</span>"
+          + "<span style=\"flex:none\">[" + safe(label) + "]</span>"
+          + '<span style="flex:none;color:var(--muted)">' + safe(session) + "</span>"
+          + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + safe(detail) + "</span></div>";
+      }).join("");
+    }
+
+    async function pollAgentEvents() {
+      const payload = await api("/api/agent-events?since=" + agentEventSince);
+      agentEventSince = payload.lastSeq;
+      for (const event of payload.events) agentEventRows.unshift(event);
+      if (agentEventRows.length > 50) agentEventRows.length = 50;
+      renderAgentEvents();
+    }
+
+    setInterval(() => {
+      if (activeTab === "overview" && document.visibilityState === "visible") {
+        pollAgentEvents().catch(() => undefined);
+      }
+    }, 1000);
 
     loadTab("overview").catch((err) => {
       document.body.insertAdjacentHTML("afterbegin", '<pre style="margin:20px;color:#b94835">' + safe(err.message) + '</pre>');

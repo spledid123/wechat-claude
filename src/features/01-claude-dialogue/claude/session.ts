@@ -12,6 +12,7 @@ import type {
   UserBlocksMessage,
 } from "./types.js";
 import { createClaudePermissionPolicy } from "./permissions.js";
+import { recordAgentEvent } from "./events.js";
 import { getDiagnosticsFile } from "../../../runtime/logger.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -77,6 +78,7 @@ export class ClaudeSession {
     let resultDurationMs: number | undefined;
     this.isProcessing = true;
     this.lastQueryAtIso = new Date().toISOString();
+    recordAgentEvent(this.sessionId, "query_start", `model=${this.model ?? "(default)"}`);
 
     try {
       const queryArgs = {
@@ -107,6 +109,7 @@ export class ClaudeSession {
 
       for await (const msg of query(queryArgs)) {
         logSdkEvent(this.sessionId, this.cwd, msg);
+        recordSdkEvents(this.sessionId, msg);
         if (msg.type === "result") {
           const result = msg as {
             result?: unknown;
@@ -147,6 +150,7 @@ export class ClaudeSession {
       }
     } finally {
       this.isProcessing = false;
+      recordAgentEvent(this.sessionId, "query_end", "");
     }
 
     const text = resultText.trim()
@@ -264,6 +268,90 @@ function extractAssistantText(msg: unknown): string {
     }
   }
   return parts.length > 0 ? parts.join("\n") : "";
+}
+
+/**
+ * Push a coarse per-turn view of SDK messages into the admin event buffer.
+ * Turn-level granularity (text/thinking/tool calls/results) — stream deltas
+ * are intentionally skipped; they would flood the ring buffer.
+ */
+function recordSdkEvents(sessionId: string, msg: unknown): void {
+  try {
+    const typed = msg as { type?: string; message?: { content?: unknown } };
+    const content = typed?.message?.content;
+    if (!Array.isArray(content)) {
+      if (typed?.type === "result") {
+        recordResultEvent(sessionId, msg);
+      }
+      return;
+    }
+
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (b.type === "text" && typeof b.text === "string") {
+        recordAgentEvent(sessionId, "assistant_text", b.text);
+      } else if (b.type === "thinking" && typeof b.thinking === "string") {
+        recordAgentEvent(sessionId, "assistant_thinking", b.thinking);
+      } else if (b.type === "tool_use") {
+        recordAgentEvent(sessionId, "tool_use", String(b.name ?? "(unknown)"), {
+          input: b.input,
+        });
+      } else if (b.type === "tool_result") {
+        recordAgentEvent(
+          sessionId,
+          "tool_result",
+          toolResultText(b.content) || "(empty)",
+          { isError: b.is_error === true },
+        );
+      }
+    }
+
+    if (typed?.type === "result") {
+      recordResultEvent(sessionId, msg);
+    }
+  } catch {
+    // Observability only — never throw into the query loop.
+  }
+}
+
+function recordResultEvent(sessionId: string, msg: unknown): void {
+  const result = msg as {
+    subtype?: unknown;
+    num_turns?: unknown;
+    duration_ms?: unknown;
+    usage?: Record<string, unknown>;
+    permission_denials?: unknown;
+    errors?: unknown;
+  };
+  recordAgentEvent(
+    sessionId,
+    "result",
+    `subtype=${result.subtype ?? "?"} turns=${result.num_turns ?? "?"} `
+      + `duration=${result.duration_ms ?? "?"}ms`,
+    {
+      usage: result.usage,
+      permission_denials: result.permission_denials,
+      errors: result.errors,
+    },
+  );
+}
+
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts: string[] = [];
+  for (const block of content) {
+    if (
+      block
+      && typeof block === "object"
+      && (block as { type?: unknown }).type === "text"
+      && typeof (block as { text?: unknown }).text === "string"
+    ) {
+      parts.push((block as { text: string }).text);
+    }
+  }
+  return parts.join("\n");
 }
 
 function describeResultError(msg: unknown): string {

@@ -71,6 +71,10 @@ docs/                                  文档
 ### 3.4 Agent 会话（01）
 每微信会话一个工作区；对话记忆 = 注入最近 6 条历史（每条截 500 字），SDK 每次独立查询（无 resume）。会话对象轻量、模型可热切换（config 变化即重建）、闲置 1 小时淘汰。权限：写入限工作区，Bash 写意图拦截（Windows 无 OS 沙箱）。
 
+**桥接能力 MCP 工具化（混合协作）**：前置预处理仍是主路径（确定性、零 agent 回合）；`bridge-tools.ts` 用 SDK `createSdkMcpServer` 另提供四个进程内工具供 agent 按需调用——`extract_document`（markitdown）、`render_pdf_pages`（≤20 页/次）、`read_scanned_pdf`（渲染+视觉转录一步返回文本，split 模式可用，vision 不占 agent 回合）、`transcribe_image`。渲染输出只落会话 `working/pdf_pages/`；工具名已入权限白名单；扫描版续读指引首选工具、Bash 降级保留。经 Bridge 的 `createMcpServers` 钩子按消息创建（定时任务 runAgent 同样接线）。
+
+**Agent 事件流**：session.ts 消息循环把 query_start / 每轮 assistant_text / assistant_thinking / tool_use / tool_result / result / query_end 推入内存环形缓冲（`events.ts`，500 条，截断消毒，写失败静默）；面板经 `GET /api/agent-events?since=<seq>` 增量拉取。
+
 ### 3.5 消息编排（05）
 去抖合并窗口可配置（见四）：文本/媒体窗口 + 最大累计上限，来新消息重置计时；命令立即处理；`<<<MSG>>>` 多气泡拆分（≤4 条）。
 
@@ -78,7 +82,7 @@ docs/                                  文档
 once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用户微信确认；错过的任务在服务启动时补跑。
 
 ### 3.7 管理面板（07）
-四标签：概览（指标/AI 后端状态卡含 token 用量/存储概览/最近异常，5 秒局部刷新）、对话（会话摘要+懒加载消息+**多选批量删除**）、任务、设置（模式/模型/去抖+报文记录管理）。API：`/api/status|auth|settings|agent-status|storage|recent-errors|conversations|sessions/:id/messages|quote-files` 等。
+四标签：概览（指标/AI 后端状态卡含 token 用量/**Agent 处理流程实时卡**——1 秒增量轮询 SDK 内部逐轮文本/思考/工具调用与结果/用量/存储概览/最近异常，5 秒局部刷新）、对话（会话摘要+懒加载消息+**多选批量删除**）、任务、设置（模式/模型/去抖+报文记录管理）。API：`/api/status|auth|settings|agent-status|agent-events|storage|recent-errors|conversations|sessions/:id/messages|quote-files` 等。
 
 ### 3.8 Electron（electron）
 托盘常驻、打开面板/数据目录/日志、重启、退出；portable 数据目录用 `PORTABLE_EXECUTABLE_DIR`。
@@ -133,7 +137,7 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 
 ## 六、依赖
 
-npm 运行依赖：`@anthropic-ai/claude-agent-sdk`（含 win32-x64 CLI 二进制 ~218MB）、`sql.js`、`qrcode`。开发依赖：`typescript`、`tsx`、`electron`、`electron-builder`、`@types/*`。
+npm 运行依赖：`@anthropic-ai/claude-agent-sdk`（含 win32-x64 CLI 二进制 ~218MB）、`sql.js`、`qrcode`、`zod`（MCP 工具入参 schema）。开发依赖：`typescript`、`tsx`、`electron`、`electron-builder`、`@types/*`。
 
 Python（可选，仅文档解析）：uv 管理，`markitdown[all]` + `pymupdf`（页数统计与扫描版 PDF 渲染；AGPL-3.0，自用无碍，二次分发需自查合规），约 300MB。
 

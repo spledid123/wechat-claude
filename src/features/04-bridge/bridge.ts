@@ -469,15 +469,18 @@ export class Bridge {
 
     const nextPage = lastPage + 1;
     if (nextPage <= render.total) {
-      const python = this.pp.getPythonPath();
-      const command = python
-        ? `"${python}" tools/preprocess.py --mode pdf-pages --file ${rel(pdfPath)} `
-          + `--start ${nextPage} --max-pages ${render.total - nextPage + 1} --out-dir working/pdf_pages`
-        : "（Python 环境未配置，无法续读剩余页面）";
+      const remaining = render.total - nextPage + 1;
       lines.push(
-        `如需其余页面，先运行: ${command}`,
-        "渲染出的 PNG 位于 working/pdf_pages/，之后逐页用 Read 工具查看即可（需对话模型具备视觉能力）。",
+        `如需其余页面，调用 read_scanned_pdf 工具：file_path="${rel(pdfPath)}", start=${nextPage}, `
+          + `count=${Math.min(remaining, 20)}（每次最多 20 页，可多次调用）。`,
       );
+      const python = this.pp.getPythonPath();
+      if (python) {
+        lines.push(
+          `工具不可用时的降级方式：运行 "${python}" tools/preprocess.py --mode pdf-pages --file ${rel(pdfPath)} `
+            + `--start ${nextPage} --out-dir working/pdf_pages 渲染 PNG，再用 Read 逐页查看。`,
+        );
+      }
     } else {
       lines.push("全部页面均已转录；如需重看某页，直接用 Read 打开 working/pdf_pages/ 下对应的 PNG。");
     }

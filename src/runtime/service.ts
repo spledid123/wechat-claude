@@ -5,6 +5,7 @@ import {
   startAutoSave,
 } from "../features/01-claude-dialogue/db/connection.js";
 import { ClaudeManager } from "../features/01-claude-dialogue/claude/manager.js";
+import { createBridgeMcpServer } from "../features/01-claude-dialogue/claude/bridge-tools.js";
 import { SessionManager } from "../features/01-claude-dialogue/session/manager.js";
 import { ConversationManager } from "../features/01-claude-dialogue/conversation/manager.js";
 import { FilePreprocessor } from "../features/03-file-preprocessing/preprocessor.js";
@@ -173,6 +174,11 @@ export class WechatClaudeService {
                 : agentConfig.conversationModel,
             },
             { userText: prompt },
+            createBridgeMcpServer({
+              sessionCwd: session.cwd,
+              preprocessor: pp,
+              getConfig: () => readConfig(this.paths.dataDir),
+            }),
           );
           return result.text;
         },
@@ -198,6 +204,13 @@ export class WechatClaudeService {
       }
 
       const sendWechatAttachment = createWechatSendAttachment(botToken);
+      const createSessionMcpServers = (params: {
+        session: { cwd: string };
+      }) => createBridgeMcpServer({
+        sessionCwd: params.session.cwd,
+        preprocessor: pp,
+        getConfig: () => readConfig(this.paths.dataDir),
+      });
       const bridge = new Bridge(
         this.claude,
         sm,
@@ -206,7 +219,7 @@ export class WechatClaudeService {
         sendWechatText,
         sendWechatAttachment,
         botToken,
-        undefined,
+        createSessionMcpServers,
         this.scheduler,
         () => readConfig(this.paths.dataDir),
       );
