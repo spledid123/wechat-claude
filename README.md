@@ -14,6 +14,19 @@ WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信�
 - 本地数据默认写入程序所在目录旁边的 `.wechat-claude/`，不会提交到 git。
 - Windows portable exe 通过 `electron-builder` 生成，产物在 `release/`，不会提交到 git。
 
+## 功能特性
+
+- **微信 ↔ Claude Agent 双向桥接**：扫码登录，token 本地持久化；文本、语音（自动转写）、图片、文件、引用消息都能处理。
+- **完整智能体而非纯聊天模型**：基于 Claude Agent SDK，支持工具调用与按会话隔离的工作区。
+- **多用户独立会话**：按微信发送者隔离，各自拥有独立上下文与工作区。
+- **图片理解**：视觉通道（默认 DeepSeek vision），支持直连/分离模式，可与主对话使用不同供应商和密钥。
+- **文档解析**：PDF / Office 文档文本提取（markitdown + pymupdf）；扫描版 PDF 自动逐页视觉转录（默认上限 20 页，AI 可在工作区续读）。
+- **文档生成**：内置 docx / xlsx / pptx 生成技能，产物自动发回微信。
+- **定时任务**：自然语言创建，草稿确认制，到点自动执行并把结果发回微信。
+- **引用上下文**：引用你或 AI 的历史消息继续对话，被引内容可见。
+- **本地管理面板**：浏览器里配置模式/模型/API 接入与视觉通道、管理历史会话、查看按发送者拆分的报文记录与 Agent 处理流程实时事件流。
+- **数据全本地**：SQLite 存储、日志按大小轮转、保留期可配置；Electron 托盘常驻 + Windows 单文件 portable exe。
+
 ## 环境要求与一键安装
 
 | 项目 | 要求 | 安装方式 |
@@ -97,6 +110,44 @@ npm run dist:win:zip
 
 生成目录版并压缩为 zip。
 
+## 微信聊天指令
+
+在微信对话里直接发送即可：
+
+| 指令 | 作用 |
+| --- | --- |
+| `/new` | 新建会话 |
+| `/list` | 列出历史会话 |
+| `/switch <序号>` | 切换到指定会话 |
+| `/stop` | 强制结束当前正在处理的 AI 任务（直接发"停止"或"终止"等效） |
+| `/tasks` | 列出定时任务 |
+| `/task-del <序号或ID>` | 删除定时任务 |
+| `确认` / `取消` | 确认或放弃定时任务草稿 |
+| `/help` | 查看帮助 |
+
+定时任务通过自然语言创建：AI 先生成待确认草稿，回复"确认"后才会真正创建。
+
+## 环境变量
+
+除 `.env` 三项（见 [.env.example](.env.example)）外，其余均有合理默认，按需覆盖：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ANTHROPIC_BASE_URL` | 官方端点 | Anthropic 兼容端点（如 DeepSeek 中转） |
+| `ANTHROPIC_API_KEY` | — | API Key（x-api-key 头） |
+| `ANTHROPIC_AUTH_TOKEN` | — | Auth Token（Bearer 头，与上二选一） |
+| `WECHAT_CLAUDE_DATA_DIR` | 程序旁 `.wechat-claude/` | 数据目录位置 |
+| `WECHAT_CLAUDE_PYTHON` | 自动探测 `.venv` | Python 解释器路径（文档预处理用） |
+| `WECHAT_CLAUDE_PREPROCESS_SCRIPT` | 内置 `scripts/preprocess.py` | 预处理脚本路径 |
+| `WECHAT_CLAUDE_PREPROCESS_MAX_CHARS` | 50000 | 单文件提取字符上限 |
+| `WECHAT_CLAUDE_PREPROCESS_TIMEOUT_MS` | 60000 | 单文件预处理超时（毫秒） |
+| `WECHAT_CLAUDE_TEXT_DEBOUNCE_MS` | 3000 | 文本消息合并窗口（毫秒） |
+| `WECHAT_CLAUDE_MEDIA_DEBOUNCE_MS` | 5000 | 媒体消息合并窗口（毫秒） |
+| `WECHAT_CLAUDE_MAX_DEBOUNCE_MS` | 15000 | 消息合并最大累计时长（毫秒） |
+| `WECHAT_CLAUDE_VISION_TIMEOUT_MS` | 90000 | 视觉请求超时（毫秒） |
+| `WECHAT_CLAUDE_LOG_MAX_MB` | 5 | 单个日志文件大小上限（MB，超限轮转） |
+| `WECHAT_CLAUDE_RETENTION_DAYS` | 30 | 数据保留天数（0 = 永不清理） |
+
 ## 类型检查
 
 ```powershell
@@ -149,3 +200,7 @@ test_output.json
 - Claude 权限和工作区限制在 `src/features/01-claude-dialogue/claude/permissions.ts`，完整规则见 [Agent 权限模型详解](docs/permissions.md)。
 - Electron portable 数据目录修复逻辑在 `src/electron/paths.ts`。
 - 日志按大小轮转（`WECHAT_CLAUDE_LOG_MAX_MB`），原始报文按发送者记录在 `logs/quote/`；存储保留期由 `WECHAT_CLAUDE_RETENTION_DAYS` 控制。
+
+## 许可证
+
+[MIT](LICENSE)
