@@ -1,8 +1,16 @@
 {
   "name": "wechat-claude",
   "version": "0.1.0",
-  "private": true,
+  "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spledid123/wechat-claude.git"
+  },
+  "bugs": {
+    "url": "https://github.com/spledid123/wechat-claude/issues"
+  },
+  "homepage": "https://github.com/spledid123/wechat-claude#readme",
   "main": "dist/src/electron/main.js",
   "scripts": {
     "setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-deps.ps1",

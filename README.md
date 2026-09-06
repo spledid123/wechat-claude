@@ -1,5 +1,7 @@
 # WeChat Claude
 
+[English](README.en.md) | 简体中文
+
 WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信消息交给 Claude Agent 处理，再把回复、生成文件或定时任务结果发回微信；正式版本通过 Electron 托盘运行，并提供本地管理面板。
 
 这份 README 面向接手项目的人类工程师。普通使用者请看 [用户版 exe 使用说明](docs/user-exe-guide.md)，架构细节请看 [项目架构与打包说明](docs/architecture.md)，微信接口细节请看 [微信 iLink Bot API 实战文档](docs/wechat-ilink-api.md)。
