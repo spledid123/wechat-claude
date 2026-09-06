@@ -6,6 +6,8 @@ WeChat Claude is a locally-run WeChat ↔ Claude bridge. It hands WeChat message
 
 This README is written for engineers taking over the project. End users of the packaged exe should read the [user guide](docs/user-exe-guide.md), architecture details are in [Architecture & Packaging](docs/architecture.md), and WeChat API details in [WeChat iLink Bot API Notes](docs/wechat-ilink-api.md). (Docs in `docs/` are currently Chinese only.)
 
+> Most of the code in this project was written with AI assistance — primarily **GLM-5.3**, with some early commits by Claude (see Contributors).
+
 ## Current Status
 
 - Production source lives in `src/`; core business modules are in `src/features/`.

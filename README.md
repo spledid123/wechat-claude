@@ -6,6 +6,8 @@ WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信�
 
 这份 README 面向接手项目的人类工程师。普通使用者请看 [用户版 exe 使用说明](docs/user-exe-guide.md)，架构细节请看 [项目架构与打包说明](docs/architecture.md)，微信接口细节请看 [微信 iLink Bot API 实战文档](docs/wechat-ilink-api.md)。
 
+> 本项目代码主要由 AI 辅助完成：主力模型为 **GLM-5.3**，早期部分提交由 Claude 协助（见 Contributors）。
+
 ## 当前状态
 
 - 正式源码在 `src/`，核心业务模块在 `src/features/`。
