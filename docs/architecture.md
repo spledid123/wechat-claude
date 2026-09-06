@@ -185,7 +185,8 @@ npm run uninstall      # 清理依赖与构建产物（-All 彻底清理，见 s
 
 | 文档 | 内容 |
 | --- | --- |
-| README.md | 项目入口与交接提示 |
+| README.md | 项目入口（功能特性、安装、聊天指令、环境变量） |
+| docs/developer-guide.md | 开发指南（命令、类型检查、目录结构、维护要点） |
 | docs/user-exe-guide.md | 使用者手册（exe 运行、面板、迁移、排障） |
 | docs/packaging.md | 打包、依赖、运行时配置与维护 |
 | docs/permissions.md | Agent 权限模型详解（工具判定、工作区限制、Bash 启发式边界） |
