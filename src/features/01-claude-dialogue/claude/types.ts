@@ -129,4 +129,9 @@ export interface PromptContext {
     base64: string;
     mediaType: InlineImageMediaType;
   }>;
+  /** Reference skills discovered in the session workspace (skills/). */
+  skills?: Array<{
+    name: string;
+    description: string;
+  }>;
 }

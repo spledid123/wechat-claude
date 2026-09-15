@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 简体中文
 
-WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信消息交给 Claude Agent 处理，再把回复、生成文件或定时任务结果发回微信；正式版本通过 Electron 托盘运行，并提供本地管理面板。
+WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信消息交给 Claude Agent 处理，再把回复、生成文件或定时任务结果发回微信；正式版本以 Tauri 托盘程序运行，并提供本地管理面板。分发包约 47MB——Claude 运行时（218MB）与可选的 Python 解析环境（约 360MB）在首次运行时经安装向导按需下载。
 
 这份 README 面向使用者和访客。普通使用者请看 [用户版 exe 使用说明](docs/user-exe-guide.md)；参与开发与维护请看 [开发指南](docs/developer-guide.md)；架构细节请看 [项目架构与打包说明](docs/architecture.md)；微信接口细节请看 [微信 iLink Bot API 实战文档](docs/wechat-ilink-api.md)。
 
@@ -20,8 +20,9 @@ WeChat Claude 是一个本地运行的微信 Claude 桥接程序。它把微信�
 - **文档生成**：内置 docx / xlsx / pptx 生成技能，产物自动发回微信。
 - **定时任务**：自然语言创建，草稿确认制，到点自动执行并把结果发回微信。
 - **引用上下文**：引用你或 AI 的历史消息继续对话，被引内容可见。
+- **技能开放扩展**：把含 `SKILL.md` 的文件夹放进 `skills/` 即成为 AI 可用的参考资料，下一条消息自动生效（面板“设置”页可查看已识别列表）。
 - **本地管理面板**：浏览器里配置模式/模型/API 接入与视觉通道、管理历史会话、查看按发送者拆分的报文记录与 Agent 处理流程实时事件流。
-- **数据全本地**：SQLite 存储、日志按大小轮转、保留期可配置；Electron 托盘常驻 + Windows 单文件 portable exe。
+- **数据全本地**：SQLite 存储、日志按大小轮转、保留期可配置；Tauri 托盘常驻 + 便携目录版 Windows exe（约 47MB，首跑向导按需下载大体积组件）。
 
 ## 环境要求与一键安装
 
@@ -95,6 +96,8 @@ Data dir    : D:\path\to\project\.wechat-claude
 | `ANTHROPIC_API_KEY` | — | API Key（x-api-key 头） |
 | `ANTHROPIC_AUTH_TOKEN` | — | Auth Token（Bearer 头，与上二选一） |
 | `WECHAT_CLAUDE_DATA_DIR` | 程序旁 `.wechat-claude/` | 数据目录位置 |
+| `WECHAT_CLAUDE_CLAUDE_EXE` | 自动探测 | claude CLI 路径（默认数据目录 `runtime\claude\claude.exe`，回落 node_modules 内置） |
+| `WECHAT_ADMIN_PORT` | 8787 | 管理面板端口 |
 | `WECHAT_CLAUDE_PYTHON` | 自动探测 `.venv` | Python 解释器路径（文档预处理用） |
 | `WECHAT_CLAUDE_PREPROCESS_SCRIPT` | 内置 `scripts/preprocess.py` | 预处理脚本路径 |
 | `WECHAT_CLAUDE_PREPROCESS_MAX_CHARS` | 50000 | 单文件提取字符上限 |

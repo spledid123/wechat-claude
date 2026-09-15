@@ -9,6 +9,7 @@
  */
 
 import { getDb, queryOne, queryAll } from "../db/connection.js";
+import { syncSkills } from "../skills.js";
 import crypto from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
@@ -93,24 +94,17 @@ export class SessionManager {
   }
 
   /**
-   * Copy the bundled agent-side assets into the workspace:
-   *   skills/  — document-generation reference skills (plain files, read via Read)
-   *   tools/   — preprocess.py, so the agent can render more scanned-PDF pages
-   *              itself (the permission layer only runs workspace-local scripts).
-   * Idempotent: skips anything already present, so existing sessions are cheap.
+   * Seed the workspace with bundled agent-side assets:
+   *   skills/  — reference skills, synced folder-by-folder so user-added
+   *              skills propagate into existing sessions on the next message
+   *   tools/   — preprocess.py, so the agent can render more scanned-PDF
+   *              pages itself (the permission layer only runs workspace-local
+   *              scripts).
+   * Runs on every session resolve; each step is idempotent and cheap.
    */
   private seedWorkspaceAssets(workspaceDir: string): void {
-    const skillsDest = path.join(workspaceDir, "skills");
-    if (!fs.existsSync(skillsDest)) {
-      const skillsSrc = this.findBundledAsset("skills");
-      if (skillsSrc) {
-        try {
-          fs.cpSync(skillsSrc, skillsDest, { recursive: true });
-        } catch {
-          /* skills are optional — a failed copy must not break the session */
-        }
-      }
-    }
+    const skillsSrc = this.findBundledAsset("skills");
+    syncSkills(skillsSrc ?? undefined, workspaceDir);
 
     const toolDest = path.join(workspaceDir, "tools", "preprocess.py");
     if (!fs.existsSync(toolDest)) {
@@ -126,14 +120,10 @@ export class SessionManager {
     }
   }
 
-  /** Repo layout in dev, resourcesPath layout in a packaged exe. */
+  /** Repo layout in dev, flat portable layout in a packaged exe. */
   private findBundledAsset(relative: string): string | undefined {
-    const resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "";
-    const candidates = [
-      path.join(this.appRoot, relative),
-      resourcesPath ? path.join(resourcesPath, relative) : "",
-    ].filter(Boolean);
-    return candidates.find((candidate) => fs.existsSync(candidate));
+    const candidate = path.join(this.appRoot, relative);
+    return fs.existsSync(candidate) ? candidate : undefined;
   }
 
   /** Create a new session + workspace directories. */

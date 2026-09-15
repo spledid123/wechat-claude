@@ -103,8 +103,8 @@ export function buildSystemPromptAppend(ctx: PromptContext): string {
     );
   }
 
-  // 5c. Bundled document-generation references (plain files, no skill tooling)
-  blocks.push(buildDocumentSkillsInstruction());
+  // 5c. Reference skills bundled in the workspace (plain files, no skill tooling)
+  blocks.push(buildDocumentSkillsInstruction(ctx.skills ?? []));
 
   // 6. Recent conversation history
   if (ctx.historyText) {
@@ -233,15 +233,37 @@ function buildTextPortion(ctx: PromptContext): string {
 }
 
 /**
- * Static pointer to the bundled generation references in the workspace.
- * They are plain files — no Skill tooling involved, just Read + Bash.
+ * Dynamic pointer to the reference skills in the workspace. They are plain
+ * folders (each with a SKILL.md) — no Skill tooling involved, just Read +
+ * Bash. The list reflects what is actually present, so user-added skills
+ * under skills/ are advertised without any code change.
  */
-export function buildDocumentSkillsInstruction(): string {
-  return [
-    "DOCUMENT GENERATION REFERENCES:",
-    "The workspace skills/ directory bundles reference skills for generating",
-    "Excel (skills/minimax-xlsx), PowerPoint (skills/pptx-generator) and Word",
-    "(skills/docx) files — each has a SKILL.md plus helper scripts, and",
+export function buildDocumentSkillsInstruction(
+  skills: Array<{ name: string; description: string }>,
+): string {
+  const MAX_DESC = 160;
+  const lines = [
+    "WORKSPACE REFERENCE SKILLS:",
+    "The workspace skills/ directory bundles reference skills as plain files",
+    "— each subfolder has a SKILL.md plus helpers. When a task matches one",
+    "below (or the user mentions a skill folder by name), first Read its",
+    "SKILL.md and follow its guidance. Install any needed node/python",
+    "packages inside the workspace (e.g. npm install pptxgenjs). You may",
+    "also list skills/ to discover folders not mentioned here.",
+  ];
+  if (skills.length === 0) {
+    lines.push("(skills/ is currently empty — no reference skills bundled.)");
+  } else {
+    for (const skill of skills) {
+      const desc = skill.description
+        ? " — " + (skill.description.length > MAX_DESC
+          ? skill.description.slice(0, MAX_DESC) + "…"
+          : skill.description)
+        : "";
+      lines.push(`  - skills/${skill.name}${desc}`);
+    }
+  }
+  lines.push(
     "tools/preprocess.py is available for PDF page rendering.",
     "Bridge MCP tools are also available for on-demand document reading:",
     "extract_document (markitdown text), read_scanned_pdf (vision transcript",
@@ -249,16 +271,14 @@ export function buildDocumentSkillsInstruction(): string {
     "figures as files), transcribe_image — prefer them over manual python/Bash",
     "when reading documents or images. Tool outputs always land inside the",
     "workspace (working/pdf_pages/, working/pdf_images/).",
-    "When the user asks you to create or edit such a document, first Read the",
-    "matching SKILL.md and follow its guidance. Install any needed node/python",
-    "packages inside the workspace (e.g. npm install pptxgenjs).",
     "Save the finished file into working/output_weixin/ — the bridge sends",
     "everything placed there back to the WeChat user automatically.",
     "Office hygiene: after generating .docx/.xlsx/.pptx, run the skill's",
     "postcheck script when available; never stuff stray files into an OOXML",
     "zip — repack only with the skill's unpack/pack scripts. The bridge",
     "validates Office packages before sending and blocks broken ones.",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 /**

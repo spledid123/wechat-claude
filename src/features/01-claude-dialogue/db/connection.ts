@@ -19,10 +19,8 @@ const require = createRequire(import.meta.url);
 
 /**
  * Resolve the bundled sql.js WASM file. Without this, `initSqlJs()` tries to
- * locate `sql-wasm.wasm` relative to the module dir, which fails once the app
- * is packed into an asar archive. `asarUnpack` (see package.json build config)
- * keeps the file on disk; Electron transparently redirects the asar path to the
- * unpacked copy, so passing the resolved path here works in both dev and prod.
+ * locate `sql-wasm.wasm` relative to the module dir, which can fail in the
+ * portable layout; passing the resolved path works in both dev and prod.
  */
 function locateSqlWasm(file: string): string {
   try {

@@ -11,15 +11,13 @@
     "url": "https://github.com/spledid123/wechat-claude/issues"
   },
   "homepage": "https://github.com/spledid123/wechat-claude#readme",
-  "main": "dist/src/electron/main.js",
   "scripts": {
     "setup": "powershell -ExecutionPolicy Bypass -File scripts/setup-deps.ps1",
+    "setup:tauri": "powershell -ExecutionPolicy Bypass -File scripts/setup-tauri.ps1",
     "start": "tsx src/cli.ts",
-    "build:app": "tsc -p tsconfig.app.json && node scripts/copy-app-assets.js",
-    "electron:dev": "npm run build:app && electron .",
-    "dist:win": "npm run build:app && electron-builder --win portable --x64",
-    "dist:win:dir": "npm run build:app && electron-builder --win dir --x64",
-    "dist:win:zip": "npm run dist:win:dir && powershell -ExecutionPolicy Bypass -File scripts/package-win-zip.ps1",
+    "build:app": "node scripts/clean-dist.mjs && tsc -p tsconfig.app.json && node scripts/copy-app-assets.js",
+    "tauri:dev": "npm run build:app && tauri dev",
+    "dist:portable": "node scripts/build-portable.mjs",
     "dist:src:zip": "powershell -ExecutionPolicy Bypass -File scripts/package-source-zip.ps1",
     "check-sdk": "node scripts/check-claude-sdk.js",
     "app:service": "tsx src/cli.ts",
@@ -30,50 +28,16 @@
     "adm-zip": "^0.5.16",
     "qrcode": "^1.5.4",
     "sql.js": "^1.11.0",
+    "tar-fs": "^3.1.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.0.0",
     "@types/sql.js": "^1.4.0",
-    "electron": "^33.4.11",
-    "electron-builder": "^25.1.8",
+    "@types/tar-fs": "^2.0.4",
     "tsx": "^4.22.4",
     "typescript": "^5.5.0"
-  },
-  "build": {
-    "appId": "local.wechat-claude",
-    "productName": "WeChat Claude",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "node_modules/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "scripts/preprocess.py",
-        "to": "scripts/preprocess.py"
-      },
-      {
-        "from": "scripts/preprocess-requirements.txt",
-        "to": "scripts/preprocess-requirements.txt"
-      },
-      {
-        "from": "skills",
-        "to": "skills"
-      }
-    ],
-    "asar": true,
-    "asarUnpack": [
-      "**/node_modules/sql.js/dist/*.wasm"
-    ],
-    "win": {
-      "signAndEditExecutable": false,
-      "target": [
-        "portable"
-      ]
-    }
   }
 }

@@ -106,7 +106,9 @@ export interface ExtractPdfImagesResult {
 export class FilePreprocessor {
   private readonly appRoot: string;
   private readonly dataDir?: string;
-  private readonly pythonPath?: string;
+  /** Explicit override (env/tests); auto-detection re-runs per use so a venv
+   *  installed by the first-run wizard mid-session works without restart. */
+  private readonly pythonPathOverride?: string;
   private readonly preprocessScript?: string;
   private readonly timeoutMs: number;
   private readonly getMaxChars?: () => number;
@@ -115,7 +117,7 @@ export class FilePreprocessor {
     this.appRoot = path.resolve(options.appRoot ?? process.cwd());
     this.dataDir = options.dataDir ? path.resolve(options.dataDir) : undefined;
     this.timeoutMs = options.timeoutMs ?? readNumberEnv("WECHAT_CLAUDE_PREPROCESS_TIMEOUT_MS", 60_000);
-    this.pythonPath = options.pythonPath ?? findPythonPath(this.appRoot, this.dataDir);
+    this.pythonPathOverride = options.pythonPath;
     this.preprocessScript = options.preprocessScript ?? findPreprocessScript(this.appRoot);
     this.getMaxChars = options.getMaxChars;
   }
@@ -127,7 +129,7 @@ export class FilePreprocessor {
 
   /** Interpreter the workspace tools/preprocess.py copy should be run with. */
   getPythonPath(): string | undefined {
-    return this.pythonPath;
+    return this.pythonPathOverride ?? findPythonPath(this.appRoot, this.dataDir);
   }
 
   /**
@@ -272,15 +274,18 @@ export class FilePreprocessor {
         return;
       }
 
-      if (!this.pythonPath) {
+      // Re-detect on every use: a venv installed from the first-run wizard
+      // mid-session becomes visible here without a service restart.
+      const pythonPath = this.getPythonPath();
+      if (!pythonPath) {
         resolve({
           ok: false,
-          error: "Python 预处理环境未配置。请在 exe 同目录创建 .venv，或设置 WECHAT_CLAUDE_PYTHON。",
+          error: "Python 预处理环境未配置。可在托盘\"组件安装\"里一键安装，或手动创建 .venv / 设置 WECHAT_CLAUDE_PYTHON。",
         });
         return;
       }
 
-      const proc = spawn(this.pythonPath, [
+      const proc = spawn(pythonPath, [
         this.preprocessScript,
         ...args,
       ], {
@@ -378,12 +383,10 @@ function findPreprocessScript(appRoot: string): string | undefined {
     return path.resolve(process.env.WECHAT_CLAUDE_PREPROCESS_SCRIPT);
   }
 
-  const resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "";
   const candidates = [
     path.join(appRoot, "scripts", "preprocess.py"),
-    resourcesPath ? path.join(resourcesPath, "scripts", "preprocess.py") : "",
     path.join(process.cwd(), "scripts", "preprocess.py"),
-  ].filter(Boolean);
+  ];
 
   return candidates.find((candidate) => fs.existsSync(candidate));
 }

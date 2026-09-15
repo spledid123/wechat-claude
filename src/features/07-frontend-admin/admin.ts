@@ -25,6 +25,9 @@ import { readConfig, writeConfig, applyAnthropicEnvOverrides, type RuntimeConfig
 import type { AgentStatusSnapshot } from "../01-claude-dialogue/claude/manager.js";
 import { drainAgentEvents } from "../01-claude-dialogue/claude/events.js";
 import { applyVisionEndpointOverride } from "../03-file-preprocessing/vision.js";
+import type { BootstrapManager } from "../../runtime/bootstrap.js";
+import type { SystemSnapshot } from "../../runtime/system-monitor.js";
+import { listSkills } from "../01-claude-dialogue/skills.js";
 
 export interface AdminAuthProvider {
   getQrCode(): Promise<QrCodeResponse>;
@@ -37,9 +40,27 @@ export interface AdminServerOptions {
   bridgeDataDir: string;
   workspaceBase: string;
   tokenFile: string;
-  scheduler: SchedulerEngine;
+  /**
+   * Attached via attachScheduler() once the service finishes initializing —
+   * the admin server now comes up before the heavier startup phases so the
+   * bootstrap installer page is reachable on first run.
+   */
+  scheduler?: SchedulerEngine | null;
   /** Live Claude-manager status for the admin panel; null before startup. */
   agentStatus?: () => AgentStatusSnapshot | null;
+  /** Live service state ("bootstrap"/"starting"/"waiting_for_login"/"running"/…) for route gating. */
+  serviceState?: () => string;
+  /** First-run installer manager; present only in bootstrap mode. */
+  bootstrap?: BootstrapManager | null;
+  /** Lazily provides/creates the installer manager so the /install page can
+   *  add components (e.g. Python) long after the service is running. */
+  ensureBootstrap?: () => BootstrapManager;
+  /** Live resource usage (service/claude/system) for the overview card. */
+  systemStatus?: () => SystemSnapshot | null;
+  /** Bundled reference-skills root (repo/exe-side skills/), for the settings card. */
+  skillsDir?: string;
+  /** Graceful shutdown hook backing POST /api/shutdown (used by the app shell). */
+  onShutdown?: () => void;
   startedAt?: Date;
   now?: () => Date;
   authProvider?: AdminAuthProvider;
@@ -148,6 +169,7 @@ export class AdminServer {
   private readonly startedAt: Date;
   private readonly now: () => Date;
   private readonly authProvider: AdminAuthProvider;
+  private scheduler: SchedulerEngine | null = null;
   private lastQrCode = "";
 
   constructor(private readonly options: AdminServerOptions) {
@@ -158,6 +180,7 @@ export class AdminServer {
       getQrCodeStatus,
       saveQrImage,
     };
+    this.scheduler = options.scheduler ?? null;
     this.server = http.createServer((req, res) => {
       void this.route(req, res).catch((err) => {
         this.sendJson(res, 500, {
@@ -166,6 +189,22 @@ export class AdminServer {
         });
       });
     });
+  }
+
+  /** Wire the scheduler in once the service creates it (post-bootstrap). */
+  attachScheduler(scheduler: SchedulerEngine): void {
+    this.scheduler = scheduler;
+  }
+
+  /** Existing installer manager, or a lazily-created one for /install. */
+  private resolveBootstrap(): BootstrapManager | null {
+    if (this.options.bootstrap) return this.options.bootstrap;
+    return this.options.ensureBootstrap?.() ?? null;
+  }
+
+  private requireScheduler(): SchedulerEngine {
+    if (!this.scheduler) throw new Error("Scheduler is not ready yet.");
+    return this.scheduler;
   }
 
   listen(port = DEFAULT_PORT, host = DEFAULT_HOST): Promise<void> {
@@ -209,14 +248,99 @@ export class AdminServer {
   private async route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const method = req.method ?? "GET";
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const serviceState = this.options.serviceState?.() ?? "running";
+    const ready = serviceState === "running" || serviceState === "waiting_for_login";
+
+    // Before the service finishes initializing (bootstrap installer,
+    // starting), only the installer/shutdown routes are live.
+    if (!ready) {
+      const bootstrapApi =
+        (method === "GET" && (url.pathname === "/api/bootstrap" || url.pathname === "/install")) ||
+        (method === "POST"
+          && (url.pathname === "/api/bootstrap/claude"
+            || url.pathname === "/api/bootstrap/python"
+            || url.pathname === "/api/shutdown"));
+      const statusPage = method === "GET" && (url.pathname === "/" || url.pathname === "/api/status");
+      if (!bootstrapApi && !statusPage) {
+        this.sendJson(res, 503, { ok: false, error: `服务正在初始化（${serviceState}），请稍候。` });
+        return;
+      }
+    }
 
     if (method === "GET" && url.pathname === "/") {
-      this.sendHtml(res, renderAdminPage());
+      if (ready) {
+        this.sendHtml(res, renderAdminPage());
+      } else {
+        this.sendHtml(res, renderInstallerPage({ redirectWhenReady: true }));
+      }
+      return;
+    }
+
+    // Stable installer URL: always available (bootstrap flow and the tray
+    // "组件安装" entry alike); never auto-navigates away.
+    if (method === "GET" && url.pathname === "/install") {
+      this.sendHtml(res, renderInstallerPage({ redirectWhenReady: false }));
       return;
     }
 
     if (method === "GET" && url.pathname === "/api/status") {
-      this.sendJson(res, 200, { ok: true, status: this.buildStatus() });
+      if (ready) {
+        this.sendJson(res, 200, { ok: true, status: this.buildStatus() });
+      } else {
+        // Minimal status for the app shell's health poll: no DB access yet.
+        this.sendJson(res, 200, {
+          ok: true,
+          status: {
+            running: false,
+            serviceState,
+            startedAt: this.startedAt.toISOString(),
+            auth: this.buildAuthState(),
+          },
+        });
+      }
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/bootstrap") {
+      this.sendJson(res, 200, {
+        ok: true,
+        serviceState,
+        bootstrap: this.resolveBootstrap()?.getStatus() ?? null,
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/bootstrap/claude") {
+      this.resolveBootstrap()?.startClaudeInstall();
+      this.sendJson(res, 200, { ok: true, bootstrap: this.resolveBootstrap()?.getStatus() ?? null });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/bootstrap/python") {
+      this.resolveBootstrap()?.startPythonInstall();
+      this.sendJson(res, 200, { ok: true, bootstrap: this.resolveBootstrap()?.getStatus() ?? null });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/system") {
+      this.sendJson(res, 200, { ok: true, system: this.options.systemStatus?.() ?? null });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/skills") {
+      const skillsDir = this.options.skillsDir ?? "";
+      this.sendJson(res, 200, {
+        ok: true,
+        dir: skillsDir,
+        skills: skillsDir ? listSkills(skillsDir) : [],
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/shutdown") {
+      this.sendJson(res, 200, { ok: true });
+      const onShutdown = this.options.onShutdown;
+      if (onShutdown) setImmediate(() => onShutdown());
       return;
     }
 
@@ -486,7 +610,7 @@ export class AdminServer {
         .map((line) => {
           const match = line.match(/^(\S+)\s+(ERROR|WARN)\s+(.*)$/);
           return match
-            ? { time: formatLogClock(match[1], this.options.scheduler.getTimezone()), level: match[2], text: match[3].slice(0, 160) }
+            ? { time: formatLogClock(match[1], this.requireScheduler().getTimezone()), level: match[2], text: match[3].slice(0, 160) }
             : { time: "", level: "WARN", text: line.slice(0, 160) };
         });
     } catch {
@@ -523,7 +647,7 @@ export class AdminServer {
 
   private buildStatus(): Record<string, unknown> {
     const now = this.now();
-    const timezone = this.options.scheduler.getTimezone();
+    const timezone = this.requireScheduler().getTimezone();
     const dbPath = path.join(this.options.bridgeDataDir, "relay.sqlite");
     const sessionCount = scalar("SELECT COUNT(*) AS count FROM sessions");
     const activeSessionCount = scalar("SELECT COUNT(*) AS count FROM sessions WHERE status = 'active'");
@@ -723,8 +847,8 @@ export class AdminServer {
     task: ScheduledTaskRecord;
   } {
     const input = parseTaskInput(value);
-    const draft = this.options.scheduler.createDraft(input);
-    const confirmed = this.options.scheduler.confirmDraft(draft.draft.id);
+    const draft = this.requireScheduler().createDraft(input);
+    const confirmed = this.requireScheduler().confirmDraft(draft.draft.id);
     if (!confirmed) {
       throw new Error("Failed to confirm scheduled task.");
     }
@@ -905,6 +1029,188 @@ function parsePositiveInt(value: string | null): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function renderInstallerPage(options: { redirectWhenReady: boolean }): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WeChat Claude · 组件安装</title>
+  <style>
+    :root {
+      --ink: #18221d;
+      --muted: #657369;
+      --paper: #f7f1e3;
+      --panel: rgba(255,252,241,.92);
+      --line: rgba(32,58,45,.16);
+      --green: #2f6b4f;
+      --green-dark: #17452f;
+      --gold: #c7892d;
+      --red: #b94835;
+      color-scheme: light;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; color: var(--ink);
+      font: 14px/1.55 "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(1100px 500px at 85% -10%, rgba(199,137,45,.10), transparent 60%),
+        linear-gradient(180deg, #f9f4e7 0%, var(--paper) 45%, #f2ead6 100%);
+      min-height: 100vh;
+    }
+    header {
+      display: flex; justify-content: space-between; align-items: center; gap: 16px;
+      max-width: 720px; margin: 0 auto; padding: 20px 20px 8px;
+    }
+    h1 { margin: 0; font: 700 20px/1.2 Georgia, "Times New Roman", serif; color: var(--green-dark); }
+    h1 small { font: 400 12px/1 "Aptos","Segoe UI",sans-serif; color: var(--muted); margin-left: 8px; }
+    main { max-width: 720px; margin: 0 auto; padding: 10px 20px 48px; display: grid; gap: 14px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
+    .step { display: grid; grid-template-columns: 44px 1fr; gap: 14px; align-items: start; }
+    .badge {
+      width: 34px; height: 34px; border-radius: 50%; margin-top: 2px;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(47,107,79,.12); color: var(--green-dark); font: 700 15px/1 inherit;
+    }
+    .badge.done { background: var(--green); color: #fff; }
+    .step h2 { margin: 2px 0 4px; font: 700 15px/1.3 Georgia, serif; color: var(--green-dark); }
+    .step h2 .tag {
+      font: 600 11px/1 "Aptos","Segoe UI",sans-serif; vertical-align: 2px; margin-left: 8px;
+      color: var(--gold); border: 1px solid rgba(199,137,45,.4); border-radius: 6px; padding: 2px 6px;
+    }
+    .step h2 .tag.optional { color: var(--muted); border-color: var(--line); }
+    .desc { color: var(--muted); font-size: 12.5px; margin: 0 0 10px; }
+    .progress {
+      height: 8px; border-radius: 4px; overflow: hidden;
+      background: rgba(32,58,45,.12); margin: 10px 0 6px;
+    }
+    .progress i { display: block; height: 100%; width: 0; background: var(--green); transition: width .3s; }
+    .progress.indeterminate i { width: 40%; animation: slide 1.2s infinite linear; }
+    @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+    .state-line { min-height: 18px; font-size: 12.5px; color: var(--muted); }
+    .state-line.error { color: var(--red); }
+    button.primary {
+      background: var(--green); color: #fff; border: 0; border-radius: 9px;
+      padding: 8px 16px; font: 600 13px/1 inherit; cursor: pointer;
+    }
+    button.primary:disabled { opacity: .55; cursor: default; }
+    .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .meta { text-align: center; color: var(--muted); font-size: 12.5px; }
+    #startup-card { text-align: center; color: var(--muted); padding: 40px 18px; }
+    #startup-card .spin {
+      display: inline-block; width: 22px; height: 22px; border-radius: 50%;
+      border: 3px solid rgba(47,107,79,.2); border-top-color: var(--green);
+      animation: rot 1s infinite linear; margin-bottom: 10px;
+    }
+    @keyframes rot { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<header><h1>WeChat Claude <small>组件安装</small></h1></header>
+<main>
+  <div class="card" id="startup-card" hidden><span class="spin"></span><div>服务正在启动，请稍候…</div></div>
+
+  <div id="steps" style="display:grid; gap:14px;">
+    <div class="card step" id="card-claude">
+      <div class="badge">1</div>
+      <div>
+        <h2>Claude Agent 运行时<span class="tag">必需</span></h2>
+        <p class="desc">AI 对话与工具调用的核心（claude.exe，约 218MB）。首次使用需下载一次，之后常驻本机。</p>
+        <div class="row"><button class="primary" id="btn-claude">下载并安装</button></div>
+        <div class="progress" hidden><i></i></div>
+        <div class="state-line"></div>
+      </div>
+    </div>
+
+    <div class="card step" id="card-python">
+      <div class="badge">2</div>
+      <div>
+        <h2>Python 文档解析环境<span class="tag optional">可选</span></h2>
+        <p class="desc">启用 PDF / Office 文档解析与扫描版识别（markitdown + PyMuPDF，约 360MB）。不安装不影响聊天与图片理解；装完即生效，无需重启。</p>
+        <div class="row"><button class="primary" id="btn-python">安装（可选）</button></div>
+        <div class="progress" hidden><i></i></div>
+        <div class="state-line"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="ready-card" hidden style="text-align:center">
+    <div style="margin-bottom:10px">✅ 核心组件已就绪，服务正在运行。</div>
+    <a href="/" style="display:inline-block;background:var(--green);color:#fff;border-radius:9px;padding:9px 18px;font:600 13px/1 inherit;text-decoration:none">打开管理面板</a>
+    <div class="meta" style="margin-top:10px">本窗口可随时关闭（托盘菜单"组件安装"可重新打开）。</div>
+  </div>
+
+  <div class="meta" id="overall">① 下载完成后自动继续启动；② 为可选项，现在或以后安装均可。</div>
+</main>
+<script>
+  const REDIRECT_WHEN_READY = ${options.redirectWhenReady ? "true" : "false"};
+  const BUSY = ["downloading", "extracting", "installing"];
+  const $ = (id) => document.getElementById(id);
+  function fmtBytes(n) {
+    if (!n) return "";
+    const mb = n / 1048576;
+    return mb >= 1 ? mb.toFixed(1) + " MB" : Math.round(n / 1024) + " KB";
+  }
+  function setCard(cardId, st, label) {
+    const card = $(cardId);
+    const progress = card.querySelector(".progress");
+    const line = card.querySelector(".state-line");
+    const button = card.querySelector("button.primary");
+    const busy = BUSY.includes(st.status);
+    const done = st.status === "installed";
+    card.querySelector(".badge").classList.toggle("done", done);
+    card.querySelector(".badge").textContent = done ? "✓" : (cardId === "card-claude" ? "1" : "2");
+    button.disabled = busy || done;
+    button.textContent = done ? "已安装"
+      : st.status === "downloading" ? "下载中…"
+      : st.status === "extracting" ? "解压中…"
+      : st.status === "installing" ? "安装中…"
+      : st.status === "error" ? "重试"
+      : label;
+    progress.hidden = !busy;
+    progress.classList.toggle("indeterminate", busy && st.status !== "downloading");
+    progress.firstElementChild.style.width =
+      st.status === "downloading" && st.totalBytes > 0
+        ? Math.min(100, Math.round(st.receivedBytes / st.totalBytes * 100)) + "%"
+        : "100%";
+    line.classList.toggle("error", st.status === "error");
+    line.textContent = st.status === "downloading" && st.totalBytes > 0
+      ? fmtBytes(st.receivedBytes) + " / " + fmtBytes(st.totalBytes)
+      : (st.error ? "出错：" + st.error : (st.message || ""));
+  }
+  async function tick() {
+    try {
+      const s = await (await fetch("/api/status")).json();
+      const state = s.status?.serviceState ?? (s.status?.running ? "running" : "");
+      const serviceReady = state === "running" || state === "waiting_for_login";
+      if (serviceReady && REDIRECT_WHEN_READY) { location.reload(); return; }
+      const b = await (await fetch("/api/bootstrap")).json();
+      if (!b.bootstrap) {
+        $("steps").hidden = true; $("startup-card").hidden = false;
+        return;
+      }
+      $("steps").hidden = false; $("startup-card").hidden = true;
+      $("ready-card").hidden = !serviceReady;
+      setCard("card-claude", b.bootstrap.claude, "下载并安装");
+      setCard("card-python", b.bootstrap.python, "安装（可选）");
+      $("overall").textContent = b.bootstrap.ready
+        ? "全部组件就绪。"
+        : "① Claude 运行时下载完成后将自动继续启动；② Python 环境可选，装完即生效。";
+    } catch { /* service restarting between polls; keep trying */ }
+  }
+  document.addEventListener("click", async (ev) => {
+    const id = ev.target.closest("button.primary")?.id;
+    if (id !== "btn-claude" && id !== "btn-python") return;
+    await fetch("/api/bootstrap/" + (id === "btn-claude" ? "claude" : "python"), { method: "POST" });
+    tick();
+  });
+  tick();
+  setInterval(tick, 1000);
+</script>
+</body>
+</html>`;
+}
+
 function renderAdminPage(): string {
   return `<!doctype html>
 <html lang="zh-CN">
@@ -1015,6 +1321,7 @@ function renderAdminPage(): string {
       <button id="refresh">刷新当前页</button>
       <button id="refreshQr" class="secondary">刷新二维码</button>
       <button id="pollQr" class="secondary">轮询扫码状态</button>
+      <button id="openInstall" class="secondary" title="下载/补装 Claude 运行时与 Python 解析环境">组件安装</button>
     </div>
   </header>
 
@@ -1042,6 +1349,9 @@ function renderAdminPage(): string {
       </div>
       <div class="grid">
         <div class="card"><h2>存储概览</h2><div id="storage" class="stack muted">加载中…</div></div>
+        <div class="card"><h2>资源占用</h2><div id="system" class="stack muted">加载中…</div></div>
+      </div>
+      <div class="grid">
         <div class="card"><h2>最近异常</h2><div id="errors" class="stack muted">加载中…</div></div>
       </div>
     </section>
@@ -1118,6 +1428,10 @@ function renderAdminPage(): string {
         </form>
       </div>
       <div class="card"><h2>报文记录（按发送者）</h2><div id="quoteFiles" class="stack muted">加载中…</div></div>
+      <div class="card">
+        <h2>参考技能（skills/）</h2>
+        <div id="skills" class="stack muted">加载中…</div>
+      </div>
     </section>
   </main>
 
@@ -1171,10 +1485,10 @@ function renderAdminPage(): string {
       if (!force && loadedTabs.has(tab)) return Promise.resolve();
       loadedTabs.add(tab);
       const jobs = {
-        overview: () => Promise.all([loadStatus(), loadAgent(), loadAuth(), loadStorage(), loadErrors(), pollAgentEvents()]),
+        overview: () => Promise.all([loadStatus(), loadAgent(), loadAuth(), loadStorage(), loadSystem(), loadErrors(), pollAgentEvents()]),
         conversations: () => loadSessions(),
         tasks: () => loadTasks(),
-        settings: () => Promise.all([loadSettings(), loadQuoteFiles()]),
+        settings: () => Promise.all([loadSettings(), loadQuoteFiles(), loadSkills()]),
       };
       return (jobs[tab] || (() => {}))();
     }
@@ -1221,6 +1535,26 @@ function renderAdminPage(): string {
         <div>数据目录合计 <strong>\${safe(storage.totalMb)} MB</strong>（工作区 \${safe(storage.workspacesMb)} · 日志 \${safe(storage.logsMb)} · 数据库 \${safe(storage.dbMb)}）</div>
         <div class="tiny">会话 \${safe(storage.sessions)} 个（已关闭 \${safe(storage.closedSessions)}，超 \${safe(storage.retentionDays)} 天自动清理）· 引用索引 \${safe(storage.quoteIndexed)} 条（永不清）</div>\`;
       $("storage").classList.remove("muted");
+    }
+
+    async function loadSystem() {
+      const { system } = await api("/api/system");
+      if (!system) {
+        $("system").innerHTML = '<span class="tiny">资源信息不可用</span>';
+        return;
+      }
+      const pct = (v) => (v == null ? "-" : v + "%");
+      const upMin = Math.round(system.node.uptimeSec / 60);
+      const claude = system.claude.count
+        ? "<strong>" + safe(system.claude.rssMb) + " MB × " + safe(system.claude.count) + " 个进程</strong> · CPU " + pct(system.claude.cpuPercent)
+        : "空闲（AI 处理时启动）";
+      $("system").innerHTML = \`
+        <div>服务进程 <strong>\${safe(system.node.rssMb)} MB</strong> · CPU \${pct(system.node.cpuPercent)} <span class="tiny">PID \${safe(system.node.pid)} · 已运行 \${upMin} 分钟</span></div>
+        <div class="tiny">Node 堆内存 \${safe(system.node.heapUsedMb)} MB</div>
+        <div>Claude 运行时：\${claude}</div>
+        <div class="tiny">系统内存 \${Math.round(system.system.freeMemMb)} MB 可用 / \${Math.round(system.system.totalMemMb)} MB · 系统 CPU \${pct(system.system.cpuPercent)}</div>
+        <div class="tiny">CPU 为单核口径（单核 = 100%）；后台每 5 秒采样一次，面板仅读取缓存。</div>\`;
+      $("system").classList.remove("muted");
     }
 
     async function loadErrors() {
@@ -1393,7 +1727,18 @@ function renderAdminPage(): string {
       $("quoteFiles").classList.remove("muted");
     }
 
+    async function loadSkills() {
+      const { skills, dir } = await api("/api/skills");
+      const list = skills.length
+        ? skills.map((s) => \`<div><strong>\${safe(s.name)}</strong><span class="tiny"> — \${safe(s.description || "（SKILL.md 未写 description）")}</span></div>\`).join("")
+        : '<span class="tiny">skills/ 目录为空。</span>';
+      $("skills").innerHTML = list
+        + \`<div class="tiny" style="margin-top:8px">把新技能文件夹（内含 SKILL.md，frontmatter 写 description）放到 <code>\${safe(dir)}</code> 即可——对下一条消息自动生效；修改已有技能需在微信发 /new 重建会话。</div>\`;
+      $("skills").classList.remove("muted");
+    }
+
     $("refresh").addEventListener("click", () => loadTab(activeTab, true).catch(alert));
+    $("openInstall").addEventListener("click", () => { location.href = "/install"; });
     $("refreshQr").addEventListener("click", async () => {
       await api("/api/auth/qr", { method: "POST", body: "{}" });
       await loadAuth();
@@ -1475,10 +1820,11 @@ function renderAdminPage(): string {
       }
     });
 
-    // 概览页的 AI 状态局部自动刷新
+    // 概览页的 AI 状态与资源占用局部自动刷新
     setInterval(() => {
       if (activeTab === "overview" && document.visibilityState === "visible") {
         loadAgent().catch(() => undefined);
+        loadSystem().catch(() => undefined);
       }
     }, 5000);
 

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 export interface RuntimePaths {
@@ -14,6 +15,19 @@ export function getOfficialDataDir(repoRoot = process.cwd()): string {
   return process.env.WECHAT_CLAUDE_DATA_DIR
     ? path.resolve(process.env.WECHAT_CLAUDE_DATA_DIR)
     : path.join(repoRoot, ".wechat-claude");
+}
+
+/**
+ * The claude CLI executable the Agent SDK should spawn, when it should not
+ * use the SDK's own default (the platform npm package inside node_modules).
+ * Order: WECHAT_CLAUDE_CLAUDE_EXE env → <dataDir>/runtime/claude/claude.exe
+ * (the first-run installer's download target) → undefined (SDK default).
+ */
+export function resolveClaudeExecutable(dataDir: string): string | undefined {
+  const fromEnv = process.env.WECHAT_CLAUDE_CLAUDE_EXE?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
+  const downloaded = path.join(dataDir, "runtime", "claude", "claude.exe");
+  return fs.existsSync(downloaded) ? downloaded : undefined;
 }
 
 export function buildRuntimePaths(options: {

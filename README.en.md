@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-WeChat Claude is a locally-run WeChat ↔ Claude bridge. It hands WeChat messages over to a Claude Agent for processing, then sends replies, generated files, or scheduled-task results back to WeChat. The production version runs as an Electron tray app and ships with a local admin panel.
+WeChat Claude is a locally-run WeChat ↔ Claude bridge. It hands WeChat messages over to a Claude Agent for processing, then sends replies, generated files, or scheduled-task results back to WeChat. The production version runs as a Tauri tray app and ships with a local admin panel. The distribution weighs about 47MB — the Claude runtime (218MB) and the optional Python preprocessing env (~360MB) are downloaded on demand by the first-run installer.
 
 This README is aimed at users and visitors. End users of the packaged exe should read the [user guide](docs/user-exe-guide.md); for development and maintenance see the [Developer Guide](docs/developer-guide.md); architecture details are in [Architecture & Packaging](docs/architecture.md), and WeChat API details in [WeChat iLink Bot API Notes](docs/wechat-ilink-api.md). (Docs in `docs/` are currently Chinese only.)
 
@@ -20,8 +20,9 @@ This README is aimed at users and visitors. End users of the packaged exe should
 - **Document generation**: bundled docx/xlsx/pptx skills; generated files are sent back to WeChat automatically.
 - **Scheduled tasks**: created in natural language with a draft-confirmation flow; executed on schedule with results delivered back to WeChat.
 - **Quoted-message context**: quote your own or the AI's earlier messages to continue a thread; the quoted content is visible to the AI.
+- **User-extensible skills**: drop a folder with a SKILL.md into `skills/` and it becomes reference material for the AI, effective on the next message (listed on the panel's Settings tab).
 - **Local admin panel**: configure mode/model/API access and the vision channel in the browser; manage sessions; inspect per-sender raw message logs and a live agent-event stream.
-- **Fully local data**: SQLite storage, size-based log rotation, configurable retention; Electron tray app + single-file Windows portable exe.
+- **Fully local data**: SQLite storage, size-based log rotation, configurable retention; Tauri tray app + portable-directory Windows build (~47MB; heavy components download on demand at first run).
 
 ## Requirements & One-Click Setup
 
@@ -95,6 +96,8 @@ Beyond the three `.env` entries (see [.env.example](.env.example)), everything e
 | `ANTHROPIC_API_KEY` | — | API key (x-api-key header) |
 | `ANTHROPIC_AUTH_TOKEN` | — | Auth token (Bearer header; either one of the two) |
 | `WECHAT_CLAUDE_DATA_DIR` | `.wechat-claude/` next to the app | Data directory |
+| `WECHAT_CLAUDE_CLAUDE_EXE` | auto-detected | claude CLI path (default: `runtime\claude\claude.exe` in the data dir, falls back to the bundled node_modules copy) |
+| `WECHAT_ADMIN_PORT` | 8787 | Admin panel port |
 | `WECHAT_CLAUDE_PYTHON` | auto-detected `.venv` | Python interpreter path (document preprocessing) |
 | `WECHAT_CLAUDE_PREPROCESS_SCRIPT` | bundled `scripts/preprocess.py` | Preprocessing script path |
 | `WECHAT_CLAUDE_PREPROCESS_MAX_CHARS` | 50000 | Per-file extraction character cap |

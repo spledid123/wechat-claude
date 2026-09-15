@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import {
   initializeDatabase,
   closeDatabase,
@@ -22,7 +23,9 @@ import {
   createWechatTypingService,
   type OutboundTextSent,
 } from "./wechat-runtime.js";
-import { buildRuntimePaths, type RuntimePaths } from "./paths.js";
+import { buildRuntimePaths, resolveClaudeExecutable, type RuntimePaths } from "./paths.js";
+import { BootstrapManager, needsBootstrap } from "./bootstrap.js";
+import { SystemMonitor } from "./system-monitor.js";
 import { createRuntimeLogger, setRootLogger, setDiagnosticsDir, type RuntimeLogger } from "./logger.js";
 import { readConfig, applyAnthropicEnvOverrides } from "./config.js";
 import { appendQuoteDebugRecord, quoteFilePathForUser } from "./quote-debug.js";
@@ -31,6 +34,7 @@ import { runStartupStorageCleanup } from "./storage-cleanup.js";
 export type WechatClaudeServiceState =
   | "idle"
   | "starting"
+  | "bootstrap"
   | "waiting_for_login"
   | "running"
   | "stopping"
@@ -74,6 +78,8 @@ export class WechatClaudeService {
   private schedulerTimer: NodeJS.Timeout | null = null;
   private servicePromise: Promise<void> | null = null;
   private stopPromise: Promise<void> | null = null;
+  private bootstrap: BootstrapManager | null = null;
+  private systemMonitor: SystemMonitor | null = null;
 
   constructor(options: WechatClaudeServiceOptions = {}) {
     this.paths = buildRuntimePaths({
@@ -132,6 +138,47 @@ export class WechatClaudeService {
     this.logger.info(`Token: ${botToken ? "(configured)" : "(not configured)"}`);
 
     try {
+      // The admin server comes up FIRST so the first-run installer page is
+      // reachable before the heavier init (DB, managers) runs. Panel routes
+      // stay 503-gated until the service reaches waiting_for_login/running.
+      this.bootstrap = needsBootstrap(this.paths.dataDir)
+        ? new BootstrapManager(this.paths, this.logger, this.abortController.signal)
+        : null;
+      this.systemMonitor = new SystemMonitor();
+      this.systemMonitor.start();
+      this.adminServer = createAdminServer({
+        dataDir: this.paths.dataDir,
+        bridgeDataDir: this.paths.bridgeDataDir,
+        workspaceBase: this.paths.workspaceBase,
+        tokenFile: this.paths.tokenFile,
+        scheduler: null,
+        agentStatus: () => this.claude?.snapshot() ?? null,
+        serviceState: () => this.state,
+        bootstrap: this.bootstrap,
+        ensureBootstrap: () => this.ensureBootstrapManager(),
+        systemStatus: () => this.systemMonitor?.getSnapshot() ?? null,
+        skillsDir: path.join(this.paths.repoRoot, "skills"),
+        onShutdown: () => {
+          void this.stop();
+        },
+      });
+      await this.adminServer.listen(this.adminPort);
+      this.logger.info(`Admin panel: ${this.adminServer.url}/`);
+      this.logger.info(
+        `Claude executable: ${resolveClaudeExecutable(this.paths.dataDir) ?? "(SDK bundled)"}`,
+      );
+
+      if (this.bootstrap) {
+        this.state = "bootstrap";
+        this.logger.info("Bootstrap: claude runtime missing; serving first-run installer.");
+        await this.bootstrap.waitUntilReady(this.abortController.signal);
+        if (this.abortController.signal.aborted) {
+          return;
+        }
+        this.state = "starting";
+        this.logger.info("Bootstrap complete; continuing service startup.");
+      }
+
       await initializeDatabase(this.paths.bridgeDataDir);
       startAutoSave(this.autoSaveIntervalMs);
 
@@ -214,16 +261,7 @@ export class WechatClaudeService {
         },
       });
 
-      this.adminServer = createAdminServer({
-        dataDir: this.paths.dataDir,
-        bridgeDataDir: this.paths.bridgeDataDir,
-        workspaceBase: this.paths.workspaceBase,
-        tokenFile: this.paths.tokenFile,
-        scheduler: this.scheduler,
-        agentStatus: () => this.claude?.snapshot() ?? null,
-      });
-      await this.adminServer.listen(this.adminPort);
-      this.logger.info(`Admin panel: ${this.adminServer.url}/`);
+      this.adminServer?.attachScheduler(this.scheduler);
 
       if (!botToken) {
         this.state = "waiting_for_login";
@@ -356,11 +394,29 @@ export class WechatClaudeService {
     await this.servicePromise?.catch(() => undefined);
   }
 
+  /**
+   * Installer manager on demand: the /install page can add components (e.g.
+   * Python) long after startup, even when the initial run needed no bootstrap.
+   */
+  private ensureBootstrapManager(): BootstrapManager {
+    if (!this.bootstrap) {
+      this.bootstrap = new BootstrapManager(
+        this.paths,
+        this.logger,
+        this.abortController?.signal ?? new AbortController().signal,
+      );
+      this.logger.info("Bootstrap: installer manager attached on demand (/install).");
+    }
+    return this.bootstrap;
+  }
+
   private async cleanup(botToken: string): Promise<void> {
     if (this.schedulerTimer) {
       clearInterval(this.schedulerTimer);
       this.schedulerTimer = null;
     }
+    this.systemMonitor?.stop();
+    this.systemMonitor = null;
     await this.adminServer?.close().catch(() => undefined);
     this.adminServer = null;
     await this.orchestrator?.flushAll().catch((err) => this.logger.error("Flush error:", err));

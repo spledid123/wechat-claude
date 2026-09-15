@@ -30,8 +30,8 @@ Claude Agent SDK（内置 claude CLI）── DeepSeek Anthropic 兼容端点
 
 ```text
 src/runtime/service.ts   正式服务（组装根）
-src/cli.ts               CLI 入口
-src/electron/main.ts     Electron 托盘入口
+src/cli.ts               CLI 入口（Tauri 壳拉起的就是它：node.exe dist/src/cli.js）
+src-tauri/src/main.rs    Tauri 托盘壳入口
 ```
 
 后端模型通过 Anthropic 兼容端点接 DeepSeek（`ANTHROPIC_BASE_URL`），模型选择在 `config.json`（见四）。
@@ -47,7 +47,7 @@ src/features/05-message-orchestration/ 消息去抖合并（可配置）、正�
 src/features/06-scheduler/             一次性/每天/每周定时任务
 src/features/07-frontend-admin/        本地管理面板（四标签）
 src/runtime/                           服务生命周期、配置、日志、存储清理、路径
-src/electron/                          托盘菜单、portable 路径修复
+src-tauri/                             Tauri 托盘壳（Rust）：进程管理、安装器窗口、托盘菜单
 scripts/                               setup/启动/打包脚本、preprocess.py、vision-test
 docs/                                  文档
 ```
@@ -63,7 +63,7 @@ docs/                                  文档
 - 门槛：魔数嗅探真实格式（不信任扩展名）、单图 ≤15MB、单请求 ≤10 张；失败报错不回退。
 - PDF/Office 走 markitdown（可选 Python 环境），文本文件内置读取；**OCR 已移除**。
 - **扫描版 PDF 视觉回退**：markitdown 对 PDF 附带页数统计（PyMuPDF），每页提取文字 <100 字符即判定扫描版——先给用户微信发送 ETA 提示（"正在视觉识别第 a-b 页，预计约 X 分钟"，按 12 秒/页÷并发估算），再并发渲染+转录前 20 页（`working/pdf_pages/`，`transcribePdfPages` 并发数=visionConcurrency，失败页串行重试一次），按 `[第N页]` 拼接；提示词附续读命令，AI 可自行渲染并 Read 剩余页面（直连模式），或调用 `read_scanned_pdf` 工具（工具批次 ≥5 页同样先发 ETA）。旧版 `.doc/.xls/.ppt` 直接提示转存。
-- **文档生成参考资料**：会话工作区初始化时把仓库 `skills/`（minimax-xlsx / pptx-generator / docx，纯文件约 1MB）和 `scripts/preprocess.py`（→ `tools/`）复制进工作区。不走 SDK 的 skills 机制——AI 用已放行的 Read/Bash 直接使用；生成物写入 `working/output_weixin/` 即自动发回。
+- **参考技能（用户可扩展）**：仓库/exe 旁 `skills/`（内置 minimax-xlsx / pptx-generator / docx，纯文件约 1MB）与 `scripts/preprocess.py`（→ `tools/`）。`skills.ts` 负责枚举（子文件夹含 SKILL.md 即技能，frontmatter `description` 进提示词）与**按文件夹增量同步**（每次会话解析时执行，用户新增技能对已有会话的下一条消息生效）；提示词块 `buildDocumentSkillsInstruction` 动态渲染技能列表。不走 SDK 的 skills 机制——AI 用已放行的 Read/Bash 直接使用；生成物写入 `working/output_weixin/` 即自动发回。面板设置页“参考技能”卡经 `GET /api/skills` 列出已识别技能。
 
 ### 3.3 引用机制（04 + 01）
 `message_text_index` 按**用户全局**存储每条消息的解析文本（跨对话可查）。入站消息收信时入库；引用解析首选服务端 msg_id 精确匹配。**引用 AI 自己的回复/发出的媒体**：sendmessage 响应实测不返回 msg_id，无法按 id 索引出站内容，改为**时间就近匹配**——引用消息携带被引消息的服务端 `create_time_ms`，在 conversations 全部行（双向）中取窗口 [-30s,+10s] 最近一条；**匹配行必须分类**：发出的图片/文件在投递时即记录媒体行（message_type 2/4 + 文件名），命中返回自描述标记（文件仍在工作区，agent 可用工具重开）；用户自己的纯媒体消息行返回诚实的"未能解析"标签；仅文本行返回内容并回填索引供重复引用直达。解析失败注入"未能解析"提示（**不吞消息**）。
@@ -84,8 +84,9 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 ### 3.7 管理面板（07）
 四标签：概览（指标/AI 后端状态卡含 token 用量/**Agent 处理流程实时卡**——1 秒增量轮询 SDK 内部逐轮文本/思考/工具调用与结果/用量，以及程序自身的收发与文件处理事件，行可点开看全文；存储概览/最近异常，5 秒局部刷新）、对话（会话摘要+懒加载消息+**多选批量删除**，发出/收到的图片文件以标记行展示）、任务、设置（模式/模型/去抖+报文记录管理、预处理字符上限、扫描版视觉并发、API 接入与视觉通道独立接入）。API：`/api/status|auth|settings|agent-status|agent-events|storage|recent-errors|conversations|sessions/:id/messages|quote-files` 等。
 
-### 3.8 Electron（electron）
-托盘常驻、打开面板/数据目录/日志、重启、退出；portable 数据目录用 `PORTABLE_EXECUTABLE_DIR`。
+### 3.8 Tauri 壳（src-tauri）
+托盘常驻（状态行/打开面板/数据目录/日志/重启/退出）；以 `CREATE_NO_WINDOW` 拉起 `node
+ode.exe dist/src/cli.js`（cwd=exe 目录，数据目录与 .env 随之落在 exe 旁）；轮询 `/api/status` 驱动状态与组件安装窗口（bootstrap 模式自动弹出，指向 `/install`，**装完保持打开、不自动弹浏览器**；托盘"组件安装"随时重开且强制回到安装页，关闭仅隐藏；面板头部另有"组件安装"入口互达）；子进程放入 KILL_ON_JOB_CLOSE 的 Job Object，壳被强杀时服务随之退出不留孤儿；`POST /api/shutdown` 优雅停机（10 秒超时兜底 kill）。
 
 ## 四、配置体系
 
@@ -116,6 +117,10 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 ```text
 .wechat-claude/
 ├── bot_token.txt            微信登录 token（明文）
+├── runtime/
+│   ├── claude/claude.exe    首跑安装向导下载的 Claude CLI（218MB，version.json 记版本）
+│   └── uv/uv.exe            首跑下载的 uv（Python 环境可选组件）
+├── .venv/                   可选 Python 预处理环境（markitdown + pymupdf）
 ├── wechat-qr.png
 ├── config.json              行为配置（见四）
 ├── bridge-data/relay.sqlite
@@ -139,7 +144,7 @@ once/daily/weekly；send_text 直发或 agent_prompt 触发 AI；AI 草稿需用
 
 ## 六、依赖
 
-npm 运行依赖：`@anthropic-ai/claude-agent-sdk`（含 win32-x64 CLI 二进制 ~218MB）、`sql.js`、`qrcode`、`zod`（MCP 工具入参 schema）。开发依赖：`typescript`、`tsx`、`electron`、`electron-builder`、`@types/*`。
+npm 运行依赖：`@anthropic-ai/claude-agent-sdk`（JS 部分；**218MB 的 win32-x64 CLI 二进制不随包分发**，由首跑安装向导下载到数据目录 `runtime\claude\`，经 `pathToClaudeCodeExecutable` 接入）、`sql.js`、`qrcode`、`zod`（MCP 工具入参 schema）、`tar-fs`（首跑下载解压）、`adm-zip`（uv 解压）。开发依赖：`typescript`、`tsx`、`@tauri-apps/cli`、`@types/*`。壳为 Rust/Tauri 2（构建需一次性安装 VS Build Tools + Rust，见 `npm run setup:tauri`）。
 
 Python（可选，仅文档解析）：uv 管理，`markitdown[all]` + `pymupdf`（页数统计与扫描版 PDF 渲染；AGPL-3.0，自用无碍，二次分发需自查合规），约 300MB。
 
@@ -151,8 +156,9 @@ Python（可选，仅文档解析）：uv 管理，`markitdown[all]` + `pymupdf`
 npm run setup          # 新机一键：npm install + uv venv + markitdown/pymupdf
                        # 全新机器（无 Node/uv）直接双击 setup.cmd（scripts/setup-machine.ps1）
 npm run build:app      # 编译（最低验证门槛）
-npm start              # CLI 运行；托盘：npm run electron:dev
-npm run dist:win:zip   # 运行版 zip（exe，~187MB）
+npm start              # CLI 运行；托盘：npm run tauri:dev（用系统 Node + 仓库根目录）
+npm run setup:tauri    # 一次性：安装构建壳所需的 VS Build Tools + Rust（幂等）
+npm run dist:portable  # 便携包 zip（~47MB；含壳 exe、Node 运行时、服务与依赖）
 npm run dist:src:zip   # 源码转移 zip（git 跟踪文件，~200KB）
 npm run uninstall      # 清理依赖与构建产物（-All 彻底清理，见 scripts/uninstall.ps1）
 ```
@@ -171,7 +177,7 @@ npm run uninstall      # 清理依赖与构建产物（-All 彻底清理，见 s
 - CLI：`npm start` 或 `start-wechat-claude.cmd`（包装 start-service.ps1）
 - 停止：Ctrl+C 一次优雅退出，二次强制
 - 无 token：服务不退出，进入 `waiting_for_login`，面板扫码保存 token 后重启
-- service 对外 API：`start() / stop() / waitUntilStopped() / getStatus()`（Electron 直接复用）
+- service 对外 API：`start() / stop() / waitUntilStopped() / getStatus()`；HTTP 侧 `POST /api/shutdown` 供壳优雅停机
 
 ## 十、已知限制
 
@@ -179,7 +185,7 @@ npm run uninstall      # 清理依赖与构建产物（-All 彻底清理，见 s
 - Windows 下 agent 无 OS 沙箱，靠权限层限制（写入限工作区、Bash 写意图拦截）
 - 对话记忆仅注入最近 6 条文本（未用 SDK resume）；直连模式图片追问依赖异步提取的文本
 - 并发=1：一批消息处理期间其他请求排队
-- npm audit 对 Electron/builder 生态的提示未处理
+- npm audit 对依赖树的提示未处理
 
 ## 文档索引
 

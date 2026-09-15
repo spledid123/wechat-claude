@@ -6,7 +6,7 @@
 
 - 正式源码在 `src/`，核心业务模块在 `src/features/`。
 - 本地数据默认写入程序所在目录旁边的 `.wechat-claude/`，不会提交到 git。
-- Windows portable exe 通过 `electron-builder` 生成，产物在 `release/`，不会提交到 git。
+- Windows 便携版通过 `npm run dist:portable` 生成（Tauri 壳 + 内置 Node + 服务代码），产物在 `release/`，不会提交到 git；218MB 的 Claude CLI 不随包分发，首跑安装向导按需下载。
 
 ## 开发与打包命令
 
@@ -23,28 +23,22 @@ npm run build:app
 编译正式 app，并复制数据库迁移文件到 `dist/`。
 
 ```powershell
-npm run electron:dev
+npm run tauri:dev
 ```
 
-编译后用 Electron 启动托盘程序。
+编译后启动 Tauri 托盘壳（debug 构建用系统 Node 与仓库根目录，不依赖便携布局）。
 
 ```powershell
-npm run dist:win
+npm run setup:tauri
 ```
 
-生成 Windows 单文件 portable exe。
+一次性安装构建壳所需的工具链（VS Build Tools + Rust，幂等可重跑），构建 `src-tauri/` 前必须先跑一次。
 
 ```powershell
-npm run dist:win:dir
+npm run dist:portable
 ```
 
-生成 `release/win-unpacked/` 目录版。
-
-```powershell
-npm run dist:win:zip
-```
-
-生成目录版并压缩为 zip。
+生成 Windows 便携包 zip（`release/WeChatClaude-portable-<版本>.zip`，约 47MB）：组装 Tauri 壳、Node 22 LTS 运行时（构建时下载缓存到 `.tmp/`）、`dist/`、生产依赖（`--omit=dev --omit=optional`，即不含 claude 平台包）、`scripts/` 与 `skills/`。
 
 ## 类型检查
 
@@ -60,7 +54,7 @@ npm run build:app
 src/                 正式源码
 src/features/        微信连接、Claude 会话、桥接、文件处理、调度器、管理后台
 src/runtime/         正式服务运行时
-src/electron/        Electron 托盘入口
+src-tauri/           Tauri 托盘壳（Rust）
 src/types/           生产构建需要的补充类型声明
 scripts/             正式构建、启动和打包脚本
 docs/                使用、架构、权限、打包说明
@@ -96,5 +90,5 @@ test_output.json
 - Agent 处理实时事件流：`claude/events.ts` 环形缓冲 + 面板概览"Agent 处理流程"卡（`/api/agent-events` 增量拉取）。
 - 微信收发 API 在 `src/features/02-wechat-connectivity/wechat/`，参数和踩坑见 [微信 iLink Bot API 实战文档](wechat-ilink-api.md)。
 - Claude 权限和工作区限制在 `src/features/01-claude-dialogue/claude/permissions.ts`，完整规则见 [Agent 权限模型详解](permissions.md)。
-- Electron portable 数据目录修复逻辑在 `src/electron/paths.ts`。
+- 首跑安装向导在 `src/runtime/bootstrap.ts`（下载 claude CLI tgz / 安装 uv+venv，状态机 + `/api/bootstrap`）；Tauri 壳在 `src-tauri/src/main.rs`（进程管理、Job Object 孤儿防护、安装器窗口、托盘）。
 - 日志按大小轮转（`WECHAT_CLAUDE_LOG_MAX_MB`），原始报文按发送者记录在 `logs/quote/`；存储保留期由 `WECHAT_CLAUDE_RETENTION_DAYS` 控制。

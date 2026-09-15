@@ -26,6 +26,7 @@ import type { ParsedMessage } from "../02-wechat-connectivity/wechat/poller.js";
 import { extractMessageItemText } from "../02-wechat-connectivity/wechat/poller.js";
 import { collectPendingWechatFiles, markWechatFilesSent, validateOfficePackage } from "./output-weixin.js";
 import { recordAgentEvent } from "../01-claude-dialogue/claude/events.js";
+import { listSkills } from "../01-claude-dialogue/skills.js";
 import type { SchedulerEngine } from "../06-scheduler/scheduler.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -287,6 +288,7 @@ export class Bridge {
       sessionSummary: summary,
       files: fileResults.length > 0 ? fileResults : undefined,
       images: inlineImages.length > 0 ? inlineImages : undefined,
+      skills: listSkills(path.join(session.cwd, "skills")),
     };
 
     if (process.env.BRIDGE_DEBUG) {

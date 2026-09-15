@@ -1,5 +1,5 @@
 ﻿# 一键安装开发/运行所需的全部依赖：
-#   1. Node 依赖（npm install，含构建 exe 所需的 electron 工具链）
+#   1. Node 依赖（npm install）
 #   2. Python 预处理环境（uv 管理：markitdown[all] + pymupdf，约 300MB）
 #
 # 用法（项目根目录）：

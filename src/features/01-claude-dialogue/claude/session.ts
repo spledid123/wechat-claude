@@ -14,6 +14,7 @@ import type {
 import { createClaudePermissionPolicy } from "./permissions.js";
 import { recordAgentEvent } from "./events.js";
 import { getDiagnosticsFile } from "../../../runtime/logger.js";
+import { getOfficialDataDir, resolveClaudeExecutable } from "../../../runtime/paths.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -81,6 +82,9 @@ export class ClaudeSession {
     recordAgentEvent(this.sessionId, "query_start", `model=${this.model ?? "(default)"}`);
 
     try {
+      // Point the SDK at the first-run downloaded claude.exe when present;
+      // otherwise leave unset so the SDK uses its bundled node_modules binary.
+      const claudeExecutable = resolveClaudeExecutable(getOfficialDataDir());
       const queryArgs = {
         prompt,
         options: {
@@ -91,6 +95,7 @@ export class ClaudeSession {
           canUseTool: this.canUseTool,
           sandbox: this.sandbox,
           settings: this.settings,
+          ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
           systemPrompt: systemAppend
             ? {
               type: "preset",
