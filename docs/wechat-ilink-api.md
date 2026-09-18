@@ -340,6 +340,18 @@ POST /ilink/bot/sendmessage
 | `from_user_id` 不要填 bot ID | 当前实测 bot 发送时为空字符串 |
 | `client_id` 应唯一 | 当前格式为 `wechat-claude-relay_<timestamp>_<random>` |
 
+### 出站日志（排查"面板显示已发但用户没收到"）
+
+每条出站消息在 service.log 记一行 INFO（`runtime/wechat-runtime.ts`）：
+
+```text
+outbound text  -> <user> ret=0 msg_id=- bubble=1/2 len=832
+outbound image -> <user> ret=0 file=steady_shape.png
+outbound file  -> <user> ret=0 file=ice_trench.m
+```
+
+`ret ≠ 0` 是 HTTP 200 内的业务失败（消息大概率未投递），会额外记一条 ERROR（面板"最近异常"可见）。注意：**微信端也可能堵塞**——ret=0 也不保证对方立刻可见，先看这行日志再判断是我方还是微信侧的问题。
+
 ## 6. 发送图片和文件
 
 发送媒体分两步：

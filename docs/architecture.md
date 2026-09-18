@@ -125,7 +125,7 @@ ode.exe dist/src/cli.js`（cwd=exe 目录，数据目录与 .env 随之落在 ex
 ├── config.json              行为配置（见四）
 ├── bridge-data/relay.sqlite
 └── logs/
-    ├── service.log(.1)      按大小轮转
+    ├── service.log(.1)      按大小轮转（入站/出站消息均记 INFO，出站行含 ret/msg_id；ret≠0 追加 ERROR）
     └── quote/<发送者>.jsonl  每条消息完整原始报文（面板可删）
 └── workspaces/session-xxxxxxxx/
     ├── incoming/            收到的媒体解密原件

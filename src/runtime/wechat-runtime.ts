@@ -6,6 +6,7 @@ import {
   sendText,
   splitLongText,
 } from "../features/02-wechat-connectivity/wechat/sender.js";
+import path from "node:path";
 import {
   IntervalTypingService,
   NoopTypingService,
@@ -30,6 +31,11 @@ export function createWechatSendText(
     const bubbles = splitLongText(text);
     for (let i = 0; i < bubbles.length; i += 1) {
       const sent = await sendText({ toUserId, contextToken, text: bubbles[i] }, botToken);
+      getRootLogger().info(
+        `outbound text -> ${toUserId} ret=${sent.ret ?? 0} msg_id=${sent.msgId ?? "-"} `
+        + `bubble=${i + 1}/${bubbles.length} len=${bubbles[i].length}`,
+      );
+      warnOnBusinessRejection("text", toUserId, sent.ret);
       // Long replies split into bubbles, each with its own server msg_id —
       // and a later WeChat quote references the quoted BUBBLE's id. Report
       // per bubble so the quote index maps id → that bubble's text.
@@ -53,11 +59,33 @@ export function createWechatSendAttachment(botToken: string): SendAttachmentFunc
       // Surface the msg_id so the bridge can index outbound images for
       // later quote lookups.
       const sent = await sendImage({ toUserId, contextToken, filePath }, botToken);
+      getRootLogger().info(
+        `outbound image -> ${toUserId} ret=${sent.ret ?? 0} file=${path.basename(filePath)}`,
+      );
+      warnOnBusinessRejection("image", toUserId, sent.ret);
       return { msgId: sent.msgId };
     }
 
-    await sendFile({ toUserId, contextToken, filePath }, botToken);
+    const sent = await sendFile({ toUserId, contextToken, filePath }, botToken);
+    getRootLogger().info(
+      `outbound file -> ${toUserId} ret=${sent.ret ?? 0} file=${path.basename(filePath)}`,
+    );
+    warnOnBusinessRejection("file", toUserId, sent.ret);
   };
+}
+
+/**
+ * sendmessage reports business failures as ret != 0 inside an HTTP 200 —
+ * purely observational here: log it loudly (it surfaces on the panel's
+ * "最近异常" card too) but never change send behaviour.
+ */
+function warnOnBusinessRejection(kind: string, toUserId: string, ret: number | undefined): void {
+  if (ret && ret !== 0) {
+    getRootLogger().error(
+      `outbound ${kind} -> ${toUserId} rejected by WeChat: ret=${ret} `
+      + "(message likely NOT delivered)",
+    );
+  }
 }
 
 export async function createWechatTypingService(botToken: string): Promise<TypingService> {
