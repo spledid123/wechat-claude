@@ -212,6 +212,7 @@ export class MessageOrchestrator {
       t === "/new"
       || t === "/help"
       || t === "/list"
+      || t === "/status"
       || t === "/stop"
       || t === "停止"
       || t === "终止"

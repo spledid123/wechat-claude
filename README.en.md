@@ -78,6 +78,7 @@ Send these directly in the WeChat chat:
 | `/new` | Start a new session |
 | `/list` | List sessions |
 | `/switch <n>` | Switch to the given session |
+| `/status` | Check current processing state: busy/idle, elapsed time, last agent action, queue depth |
 | `/stop` | Force-stop the AI task currently being processed (sending 停止 / 终止 works too) |
 | `/tasks` | List scheduled tasks |
 | `/task-del <n or ID>` | Delete a scheduled task |

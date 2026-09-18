@@ -25,7 +25,7 @@ import { downloadFromCdn } from "../02-wechat-connectivity/wechat/media.js";
 import type { ParsedMessage } from "../02-wechat-connectivity/wechat/poller.js";
 import { extractMessageItemText } from "../02-wechat-connectivity/wechat/poller.js";
 import { collectPendingWechatFiles, markWechatFilesSent, validateOfficePackage } from "./output-weixin.js";
-import { recordAgentEvent } from "../01-claude-dialogue/claude/events.js";
+import { recordAgentEvent, drainAgentEvents } from "../01-claude-dialogue/claude/events.js";
 import { listSkills } from "../01-claude-dialogue/skills.js";
 import type { SchedulerEngine } from "../06-scheduler/scheduler.js";
 import path from "node:path";
@@ -345,6 +345,38 @@ export class Bridge {
     return reply;
   }
 
+  /**
+   * /status — a reassurance line for the WeChat user: busy or idle, how
+   * long the current query has been running, what the agent last did, and
+   * whether anything is queued. The "last action" comes straight from the
+   * agent-event ring (events.ts) and is rendered by event type, so it
+   * covers every kind of work (thinking, text, any tool, file handling),
+   * not a hardcoded scenario.
+   */
+  private buildStatusReply(): string {
+    const snap = this.claude.snapshot();
+    const active = this.sm.getActiveSession();
+    const processing = active
+      ? this.claude.getSessionStatus(active.id).isProcessing
+      : false;
+
+    if (!processing || !active) {
+      if (snap.busyCount > 0 || snap.queueDepth > 0) {
+        return `你的会话当前空闲，但 AI 正在处理其他任务（忙碌 ${snap.busyCount}、排队 ${snap.queueDepth} 条），你的消息将在其后处理。`;
+      }
+      return "当前空闲，没有正在处理的任务，随时发消息。";
+    }
+
+    const lines = [`⏳ 正在处理你的消息（已运行 ${statusElapsedText(active.id, snap)}）`];
+
+    const lastAction = describeLastAgentEvent(active.id);
+    if (lastAction) lines.push(`最近动作：${lastAction}`);
+
+    if (snap.queueDepth > 0) lines.push(`排队等待：${snap.queueDepth} 条`);
+    lines.push("不想等了发 /stop 终止");
+    return lines.join("\n");
+  }
+
   private async handleCommand(text: string, fromUserId: string): Promise<string | null> {
     const t = text.trim();
 
@@ -355,6 +387,10 @@ export class Bridge {
         return "已请求终止当前正在处理的 AI 任务，几秒内生效。";
       }
       return "当前没有正在处理的 AI 任务。";
+    }
+
+    if (t === "/status" || t === "状态") {
+      return this.buildStatusReply();
     }
 
     if (t === "/new" || t === "新对话" || t === "开始新对话") {
@@ -368,6 +404,7 @@ export class Bridge {
       return [
         "可用命令：",
         "/new - 新建会话",
+        "/status - 查看当前处理状态（忙/空闲、已运行时长、最近动作）",
         "/stop - 强制终止正在处理的 AI 任务",
         "/list - 显示对话存档列表",
         "/switch <序号> - 切换到指定对话",
@@ -985,4 +1022,54 @@ export class Bridge {
       }
     }
   }
+}
+
+/** Human phrasing per agent-event type — drives /status's "最近动作". */
+const AGENT_EVENT_LABELS: Record<string, string> = {
+  query_start: "任务启动",
+  assistant_text: "生成回复文本",
+  assistant_thinking: "思考中",
+  tool_use: "工具调用",
+  tool_result: "工具返回结果",
+  result: "查询完成",
+  query_end: "查询结束",
+  msg_in: "收到消息",
+  file_done: "文件处理",
+  msg_out: "已发出消息",
+  file_out: "已发出文件",
+};
+
+/** Latest agent event for the session, rendered as "<label> <detail>（X 前）". */
+function describeLastAgentEvent(sessionId: string): string | null {
+  try {
+    const { events } = drainAgentEvents(0, sessionId);
+    const last = events[events.length - 1];
+    if (!last) return null;
+    const label = AGENT_EVENT_LABELS[last.type] ?? last.type;
+    const detail = last.detail.replace(/\s+/g, " ").trim().slice(0, 60);
+    return `${label}${detail ? " " + detail : ""}（${agoText(last.time)}）`;
+  } catch {
+    return null;
+  }
+}
+
+/** Elapsed since the running query started (session's last query time). */
+function statusElapsedText(
+  sessionId: string,
+  snap: { sessions: Array<{ sessionId: string; lastQueryAt: string | null }> },
+): string {
+  const entry = snap.sessions.find((s) => s.sessionId === sessionId);
+  if (!entry?.lastQueryAt) return "未知时长";
+  return agoText(entry.lastQueryAt);
+}
+
+function agoText(isoTime: string): string {
+  const ms = Date.now() - new Date(isoTime).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "刚刚";
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest > 0 ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`;
 }

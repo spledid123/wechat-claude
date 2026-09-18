@@ -78,6 +78,7 @@ Data dir    : D:\path\to\project\.wechat-claude
 | `/new` | 新建会话 |
 | `/list` | 列出历史会话 |
 | `/switch <序号>` | 切换到指定会话 |
+| `/status` | 查看当前处理状态：忙/空闲、已运行时长、最近动作、排队情况 |
 | `/stop` | 强制结束当前正在处理的 AI 任务（直接发"停止"或"终止"等效） |
 | `/tasks` | 列出定时任务 |
 | `/task-del <序号或ID>` | 删除定时任务 |
