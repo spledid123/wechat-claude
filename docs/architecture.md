@@ -107,6 +107,9 @@ ode.exe dist/src/cli.js`（cwd=exe 目录，数据目录与 .env 随之落在 ex
 | visionConcurrency | 20 | 扫描版逐页视觉转录并发数（实测 20 页全并发约 1 分钟；偶发失败自动串行重试） |
 | anthropicBaseUrl / anthropicApiKey / anthropicAuthToken | 未设置 | API 接入覆盖（面板"设置"页可填），**优先于 .env**，保存即生效；密钥不回显，仅显示末 4 位，留空保持不变 |
 | visionBaseUrl / visionApiKey / visionAuthToken | 未设置 | **视觉通道独立接入**（面板"设置"页可填）：扫描版 PDF 转录与图片提取可走另一家供应商/另一把密钥（如主通道 GLM、视觉 DeepSeek）；凭证与主接入互斥——只要通道填了任一凭证，视觉请求就完全使用通道自己的 Base URL + 凭证，不再混合主接入；全部留空则跟随主接入 |
+| systemPromptFile | 未设置 | **系统提示词替换**（面板"设置"页统一管理：插入模板/导入 md/恢复官方预设 → 编辑器修改 → 保存；面板不暴露路径，固定为数据目录 `system-prompt.md`）：设置后"文件内容 + 微信功能块"作为系统提示词**整体替换**官方 Claude Code 预设（省 token、自定义身份/人设，实测每轮再省约 3k 输入 token）；读取失败自动回落默认模式并记 ERROR。配套离线捕获：`preset-prompt-capture.json`（面板"捕获官方提示词"按钮产物，记录官方预设逐字全文 + claude 版本戳） |
+
+另：SDK 会话统一传 `settings.autoMemoryEnabled=false` 关闭内置记忆系统——其说明文本约占预设一半（实测 25.8k→13.0k 字符，约省 3.2k token/轮），记忆目录在 `~/.claude/projects/` 工作区之外（写入本就会被权限层拒绝），且全局 Read 权限下放任不管可能读到其他项目的记忆文件。
 
 `.env` 密钥（`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL`）作为底层默认：系统环境变量 → exe 旁 `.env` → 数据目录 `.env`；上表字段再覆盖其上。服务启动与面板保存时统一应用到运行时（vision 直连与 SDK 子进程环境同步生效）。
 

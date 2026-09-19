@@ -21,7 +21,8 @@ This README is aimed at users and visitors. End users of the packaged exe should
 - **Scheduled tasks**: created in natural language with a draft-confirmation flow; executed on schedule with results delivered back to WeChat.
 - **Quoted-message context**: quote your own or the AI's earlier messages to continue a thread; the quoted content is visible to the AI.
 - **User-extensible skills**: drop a folder with a SKILL.md into `skills/` and it becomes reference material for the AI, effective on the next message (listed on the panel's Settings tab).
-- **Local admin panel**: configure mode/model/API access and the vision channel in the browser; manage sessions; inspect per-sender raw message logs and a live agent-event stream.
+- **Custom system prompt**: the admin panel previews exactly what gets injected — the official Claude Code preset (embedded in claude.exe; a one-click offline capture records it verbatim; the built-in memory system is disabled, preset measured at ~3.2k tokens) plus the WeChat instruction blocks — and can replace the preset entirely with any markdown file for custom personas/role-play/writing, saving another ~3k input tokens per turn (model-family and Claude Code promo sections disappear with it). WeChat blocks and the permission boundary stay intact.
+- **Local admin panel**: configure mode/model/API access, the vision channel and the system prompt in the browser; manage sessions; inspect per-sender raw message logs and a live agent-event stream.
 - **Fully local data**: SQLite storage, size-based log rotation, configurable retention; Tauri tray app + portable-directory Windows build (~47MB; heavy components download on demand at first run).
 
 ## Requirements & One-Click Setup

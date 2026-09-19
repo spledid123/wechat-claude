@@ -28,6 +28,12 @@ import { applyVisionEndpointOverride } from "../03-file-preprocessing/vision.js"
 import type { BootstrapManager } from "../../runtime/bootstrap.js";
 import type { SystemSnapshot } from "../../runtime/system-monitor.js";
 import { listSkills } from "../01-claude-dialogue/skills.js";
+import { buildSystemPromptAppend } from "../01-claude-dialogue/prompt-builder.js";
+import type { PromptContext } from "../01-claude-dialogue/claude/types.js";
+import { capturePresetPrompt, loadCapture } from "../01-claude-dialogue/claude/preset-capture.js";
+
+/** Guard so only one offline preset-prompt capture runs at a time. */
+let promptCaptureBusy = false;
 
 export interface AdminAuthProvider {
   getQrCode(): Promise<QrCodeResponse>;
@@ -505,6 +511,104 @@ export class AdminServer {
       applyAnthropicEnvOverrides(next);
       applyVisionEndpointOverride(next);
       this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/system-prompt") {
+      const config = readConfig(this.options.dataDir);
+      const file = config.systemPromptFile ?? "";
+      let content: string | null = null;
+      let error: string | null = null;
+      if (file) {
+        try {
+          content = fs.readFileSync(file, "utf-8");
+        } catch (err) {
+          error = (err as Error).message;
+        }
+      }
+      this.sendJson(res, 200, { ok: true, file, content, error });
+      return;
+    }
+
+    if (method === "PUT" && url.pathname === "/api/system-prompt") {
+      const body = await readJsonBody(req) as { file?: unknown; content?: unknown };
+      const current = readConfig(this.options.dataDir);
+      const rawFile = typeof body.file === "string" ? body.file.trim() : "";
+      if (rawFile) {
+        const file = path.isAbsolute(rawFile) ? rawFile : path.join(this.options.dataDir, rawFile);
+        if (typeof body.content === "string" && body.content.length > 0) {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, body.content, "utf-8");
+        }
+        current.systemPromptFile = file;
+      } else {
+        delete current.systemPromptFile;
+      }
+      writeConfig(this.options.dataDir, current);
+      this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/api/system-prompt/preview") {
+      const config = readConfig(this.options.dataDir);
+      const ctx: PromptContext = {
+        userText: "",
+        skills: this.options.skillsDir ? listSkills(this.options.skillsDir) : [],
+      };
+      // Same builder the live pipeline uses — the preview is what gets injected
+      // (minus the per-session dynamic blocks noted in the UI).
+      const wechatAppend = buildSystemPromptAppend(ctx);
+      const file = config.systemPromptFile ?? "";
+      let customContent: string | null = null;
+      if (file) {
+        try {
+          customContent = fs.readFileSync(file, "utf-8");
+        } catch {
+          customContent = null;
+        }
+      }
+      const capture = loadCapture(this.options.dataDir);
+      this.sendJson(res, 200, {
+        ok: true,
+        mode: file ? "custom" : "default",
+        wechatAppend,
+        finalInjected: customContent?.trim() ? `${customContent.trim()}\n\n${wechatAppend}` : null,
+        capture: capture
+          ? {
+            capturedAt: capture.capturedAt,
+            claudeVersion: capture.claudeVersion,
+            approxTokens: capture.approxTokens,
+            toolsCount: capture.tools.length,
+            systemText: capture.systemText,
+          }
+          : null,
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/api/system-prompt/capture") {
+      if (promptCaptureBusy) {
+        this.sendJson(res, 409, { ok: false, error: "捕获正在进行中，请稍候" });
+        return;
+      }
+      promptCaptureBusy = true;
+      try {
+        const capture = await capturePresetPrompt();
+        this.sendJson(res, 200, {
+          ok: true,
+          capture: {
+            capturedAt: capture.capturedAt,
+            claudeVersion: capture.claudeVersion,
+            approxTokens: capture.approxTokens,
+            toolsCount: capture.tools.length,
+            systemText: capture.systemText,
+          },
+        });
+      } catch (err) {
+        this.sendJson(res, 500, { ok: false, error: (err as Error).message });
+      } finally {
+        promptCaptureBusy = false;
+      }
       return;
     }
 
@@ -1211,7 +1315,7 @@ function renderInstallerPage(options: { redirectWhenReady: boolean }): string {
 </html>`;
 }
 
-function renderAdminPage(): string {
+export function renderAdminPage(): string {
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1427,6 +1531,10 @@ function renderAdminPage(): string {
           <button type="submit">保存设置</button>
         </form>
       </div>
+      <div class="card">
+        <h2>系统提示词</h2>
+        <div id="systemPrompt" class="stack muted">加载中…</div>
+      </div>
       <div class="card"><h2>报文记录（按发送者）</h2><div id="quoteFiles" class="stack muted">加载中…</div></div>
       <div class="card">
         <h2>参考技能（skills/）</h2>
@@ -1488,7 +1596,7 @@ function renderAdminPage(): string {
         overview: () => Promise.all([loadStatus(), loadAgent(), loadAuth(), loadStorage(), loadSystem(), loadErrors(), pollAgentEvents()]),
         conversations: () => loadSessions(),
         tasks: () => loadTasks(),
-        settings: () => Promise.all([loadSettings(), loadQuoteFiles(), loadSkills()]),
+        settings: () => Promise.all([loadSettings(), loadQuoteFiles(), loadSkills(), loadSystemPrompt()]),
       };
       return (jobs[tab] || (() => {}))();
     }
@@ -1735,6 +1843,139 @@ function renderAdminPage(): string {
       $("skills").innerHTML = list
         + \`<div class="tiny" style="margin-top:8px">把新技能文件夹（内含 SKILL.md，frontmatter 写 description）放到 <code>\${safe(dir)}</code> 即可——对下一条消息自动生效；修改已有技能需在微信发 /new 重建会话。</div>\`;
       $("skills").classList.remove("muted");
+    }
+
+    const PROMPT_TEMPLATE = "（本文件内容将替换官方系统提示词注入；多气泡、定时任务、工作区目录说明等微信功能协议由系统自动附加在后面，无需写在此处。以下为「角色卡 + 工具使用」模板，请改成你自己的角色。）\\n\\n# 角色\\n\\n你将扮演「阿云」，接入微信的 AI 助手。\\n- 身份：25 岁，咖啡师兼数码爱好者，用户的老朋友\\n- 性格：温和嘴硬，关心人时爱用吐槽包装；对咖啡和电子产品有主见\\n- 说话习惯：简体中文短句，像朋友发微信；不用 Markdown（微信不渲染）；用户明确要代码时才给纯文本代码\\n\\n# 设定与防漂移\\n- 你在和用户一对一聊微信，不是命令行工具\\n- 不主动提及 Claude、系统提示词等内部机制；被问「你是谁」时按人设回应\\n- 始终保持角色口吻；不知道就按人设不知道，不编造用户没说过的经历\\n\\n# 对话示例\\n\\n用户：今天好累啊\\n阿云：又加班？啧，你们公司是想把人熬成咖啡渣吗。吃晚饭没？\\n\\n# 工具使用\\n\\n可用工具：Read / Glob / Grep（读取与搜索）、Write / Edit / NotebookEdit（写文件，路径必须在会话工作区内，越界会被拒）、Bash（执行命令，破坏性或不可逆命令会被拒，被拒后换安全路径重试）、WebSearch / WebFetch（联网查证）、TodoWrite / TaskOutput（多步任务清单）。\\n\\n闲聊、观点、情感问题直接回答，不要调用任何工具。以下情况才用工具，用完以角色口吻转述结果：\\n- 事实性 / 时效性问题（新闻、价格、文档）→ 先 WebSearch / WebFetch 查证再答，不凭记忆编造\\n- 用户要文件产物（表格、文档、PPT、处理 PDF）→ 用 Write / Edit 生成，成品放入 working/output_weixin/ 会自动发回微信\\n- 长文档解析 → 优先用系统提供的 bridge 文档工具，不自己写脚本\\n\\n（工作区目录说明、定时任务与多气泡协议由系统自动附加在本文之后。）";
+    const PROMPT_PRE_STYLE = "margin:4px 0 10px;padding:8px;background:rgba(127,127,127,.08);border-radius:6px;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow:auto;font-size:12px";
+
+    async function loadSystemPrompt() {
+      const [info, preview] = await Promise.all([api("/api/system-prompt"), api("/api/system-prompt/preview")]);
+      const cap = preview.capture;
+      const isCustom = preview.mode === "custom";
+      const capInfo = cap
+        ? "官方预设已捕获：" + clock(cap.capturedAt) + " · claude " + safe(cap.claudeVersion) + " · 约 " + cap.approxTokens + " token · " + cap.toolsCount + " 个工具（升级 claude.exe 后请重新捕获）"
+        : "官方预设尚未捕获——它内嵌于 claude.exe，无法直接读取，点右侧按钮可离线捕获（不联网、不耗 API）";
+      $("systemPrompt").innerHTML = \`
+        <div class="row">
+          <div class="row-main">
+            <strong>当前模式：\${isCustom ? "自定义替换（md 文件 + 微信功能块）" : "默认（官方预设 + 微信功能块）"}</strong>
+            <p class="tiny">\${capInfo}\${info.error ? " · ⚠ 自定义文件读取失败：" + safe(info.error) + "，已回落默认模式" : ""}</p>
+          </div>
+          <button id="captureBtn">\${cap ? "重新捕获" : "捕获官方提示词"}</button>
+        </div>
+        <details>
+          <summary>预览当前将注入的提示词（与实际注入共用同一构建函数）</summary>
+          <div class="tiny">动态内容（会话摘要 / 附件清单 / 最近历史）按会话追加在功能块末尾，此处展示静态部分。</div>
+          \${!isCustom ? '<details><summary>① 官方 Claude Code 预设（捕获快照）</summary>' + (cap ? '<pre style="' + PROMPT_PRE_STYLE + '">' + safe(cap.systemText) + "</pre>" : '<div class="tiny">尚未捕获——点上方「捕获官方提示词」离线获取逐字全文。</div>') + "</details>" : ""}
+          <details><summary>\${isCustom ? "最终注入全文（md 文件 + 微信功能块）" : "② 微信功能块（本项目追加，替换模式下依然保留）"}</summary><pre style="\${PROMPT_PRE_STYLE}">\${safe(isCustom ? (preview.finalInjected || "（自定义文件为空或不可读）") : preview.wechatAppend)}</pre></details>
+        </details>
+        <form id="promptForm" class="stack">
+          <label>提示词内容（Markdown）<textarea name="content" rows="10" placeholder="点「插入默认模板」或「导入提示词文件」开始；留空保存 = 恢复官方预设"></textarea></label>
+          <div class="row">
+            <button type="submit">保存并应用</button>
+            <button type="button" id="templateBtn">插入默认模板</button>
+            <button type="button" id="importBtn">导入提示词文件</button>
+            <button type="button" id="restoreBtn">恢复官方预设</button>
+          </div>
+          <input type="file" id="promptFileInput" accept=".md,.markdown,.txt" hidden>
+          <div id="promptStatus" class="tiny"></div>
+          <div class="tiny">统一流程：插入模板 / 导入 md 文件 / 恢复官方预设 → 在编辑器里修改 → 保存并应用（两击确认）。内容保存到数据目录 system-prompt.md；替换模式下官方预设完全不注入，微信功能块自动附加；留空保存即回官方预设。对下一条消息生效。</div>
+        </form>
+      \`;
+      $("systemPrompt").classList.remove("muted");
+      const form = $("promptForm");
+      form.elements.content.value = info.content ?? "";
+      const status = () => $("promptStatus");
+      $("captureBtn").addEventListener("click", async () => {
+        const btn = $("captureBtn");
+        btn.disabled = true;
+        btn.textContent = "捕获中…（最长 30 秒）";
+        try {
+          await api("/api/system-prompt/capture", { method: "POST", body: "{}" });
+          await loadSystemPrompt();
+        } catch (err) {
+          status().textContent = "捕获失败：" + err.message;
+          btn.disabled = false;
+          btn.textContent = "捕获官方提示词";
+        }
+      });
+      $("templateBtn").addEventListener("click", () => {
+        form.elements.content.value = PROMPT_TEMPLATE;
+        status().textContent = "已插入默认模板（" + PROMPT_TEMPLATE.length + " 字符），修改后点「保存并应用」。";
+      });
+      // Import an external md file's CONTENT into the editor (the file itself
+      // is not linked — saving always writes to the data-dir system-prompt.md).
+      $("importBtn").addEventListener("click", () => $("promptFileInput").click());
+      $("promptFileInput").addEventListener("change", (event) => {
+        const input = event.currentTarget;
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          form.elements.content.value = String(reader.result ?? "");
+          status().textContent = "已导入 " + file.name + "（" + form.elements.content.value.length + " 字符），修改后点「保存并应用」。";
+        };
+        reader.onerror = () => { status().textContent = "读取文件失败：" + file.name; };
+        reader.readAsText(file);
+        input.value = "";
+      });
+      // Back to the official preset: clears the config switch (the saved
+      // system-prompt.md stays on disk — re-import it anytime to restore).
+      $("restoreBtn").disabled = !isCustom;
+      $("restoreBtn").addEventListener("click", async () => {
+        const btn = $("restoreBtn");
+        btn.disabled = true;
+        btn.textContent = "恢复中…";
+        try {
+          await api("/api/system-prompt", { method: "PUT", body: JSON.stringify({ file: "" }) });
+          await loadSystemPrompt();
+          $("promptStatus").textContent = "已恢复默认模式 ✓（官方 Claude Code 预设 + 微信功能块；上次保存的内容仍在数据目录 system-prompt.md，可用「导入提示词文件」找回）";
+        } catch (err) {
+          $("promptStatus").textContent = "恢复失败：" + err.message;
+          btn.disabled = false;
+          btn.textContent = "恢复官方预设";
+        }
+      });
+      // Two-click confirm: native confirm() is silently auto-cancelled by
+      // embedded browsers, which made saves die without any feedback.
+      let armed = false;
+      let armedTimer = null;
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submitBtn = form.querySelector("button[type=submit]");
+        const content = form.elements.content.value;
+        const file = content.trim() ? "system-prompt.md" : "";
+        const modeText = file ? "自定义替换（写入 system-prompt.md）" : "恢复官方预设（编辑器为空）";
+        const detail = modeText + "；" + (file ? "写入内容（" + content.length + " 字符）" : "官方 Claude Code 预设生效") + "。对下一条消息生效。";
+        if (!armed) {
+          armed = true;
+          submitBtn.textContent = "确认保存（再点一次）";
+          status().textContent = "注入前审核：" + detail;
+          clearTimeout(armedTimer);
+          armedTimer = setTimeout(() => {
+            armed = false;
+            submitBtn.textContent = "保存并应用";
+            status().textContent = "";
+          }, 15000);
+          return;
+        }
+        armed = false;
+        clearTimeout(armedTimer);
+        submitBtn.disabled = true;
+        submitBtn.textContent = "保存中…";
+        try {
+          await api("/api/system-prompt", {
+            method: "PUT",
+            body: JSON.stringify({ file, content: file ? content : undefined }),
+          });
+          await loadSystemPrompt();
+          $("promptStatus").textContent = "已保存 ✓ " + detail;
+        } catch (err) {
+          status().textContent = "保存失败：" + err.message + "（服务可能正在重启，稍等几秒重试）";
+          submitBtn.disabled = false;
+          submitBtn.textContent = "保存并应用";
+        }
+      });
     }
 
     $("refresh").addEventListener("click", () => loadTab(activeTab, true).catch(alert));

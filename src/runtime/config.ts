@@ -41,6 +41,13 @@ export interface RuntimeConfig {
   visionApiKey?: string;
   /** Vision channel auth token — falls back to the main token when unset. */
   visionAuthToken?: string;
+  /**
+   * Optional path to a custom system-prompt markdown file. When set, its
+   * content fully replaces the built-in Claude Code preset; the project's
+   * WeChat instruction blocks are still appended after it. Empty/absent =
+   * default behavior (preset + WeChat blocks).
+   */
+  systemPromptFile?: string;
 }
 
 export const DEFAULT_CONFIG: RuntimeConfig = {
@@ -104,6 +111,7 @@ export function readConfig(dataDir: string): RuntimeConfig {
       visionBaseUrl: nonEmptyStringOrNone(raw.visionBaseUrl),
       visionApiKey: nonEmptyStringOrNone(raw.visionApiKey),
       visionAuthToken: nonEmptyStringOrNone(raw.visionAuthToken),
+      systemPromptFile: nonEmptyStringOrNone(raw.systemPromptFile),
     };
   } catch {
     // Corrupt or partially written file — fall back to defaults.

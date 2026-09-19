@@ -8,10 +8,137 @@
  *
  * Requires ANTHROPIC_API_KEY or DEEPSEEK_API_KEY in environment.
  *
- * Usage: node scripts/check-claude-sdk.js
+ * Usage:
+ *   node scripts/check-claude-sdk.js                 # connectivity check
+ *   node scripts/check-claude-sdk.js --prompt-compare # default vs custom
+ *                                                    # system-prompt usage
  */
 
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Same precedence as the app: real env wins, then repo .env, then data .env. */
+function loadEnvFiles() {
+  for (const file of [
+    path.join(repoRoot, ".env"),
+    path.join(repoRoot, ".wechat-claude", ".env"),
+  ]) {
+    let content;
+    try {
+      content = fs.readFileSync(file, "utf-8");
+    } catch {
+      continue;
+    }
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+      if (key && process.env[key] === undefined) process.env[key] = value;
+    }
+  }
+}
+
+/** The model production would pick from config.json (falls back to "sonnet"). */
+function resolveModel() {
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(repoRoot, ".wechat-claude", "config.json"), "utf-8"));
+    return config.imageMode === "split"
+      ? (config.conversationModel || "sonnet")
+      : (config.visionModel || "sonnet");
+  } catch {
+    return "sonnet";
+  }
+}
+
+async function runQuery(sdk, label, systemPrompt) {
+  const abortController = new AbortController();
+  const timer = setTimeout(() => abortController.abort(), 60_000);
+  let usage = null;
+  let resultText = "";
+  try {
+    for await (const msg of sdk.query({
+      prompt: "只回复两个字：收到",
+      options: {
+        model: resolveModel(),
+        permissionMode: "bypassPermissions",
+        maxTurns: 1,
+        abortController,
+        env: process.env,
+        settingSources: [],
+        disallowedTools: [
+          "AskUserQuestion", "ExitPlanMode", "CronCreate", "CronDelete", "CronList",
+          "ScheduleWakeup", "Task", "Agent", "EnterWorktree", "ExitWorktree",
+        ],
+        settings: { autoMemoryEnabled: false },
+        systemPrompt,
+      },
+    })) {
+      if (msg.type === "result") {
+        usage = msg.usage ?? null;
+        if (typeof msg.result === "string") resultText = msg.result;
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+  console.log(`\n--- ${label} ---`);
+  console.log(`   reply: ${resultText.slice(0, 60)}`);
+  if (usage) {
+    const input = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+    console.log(`   input_tokens: ${usage.input_tokens ?? 0}`);
+    console.log(`   cache_read:   ${usage.cache_read_input_tokens ?? 0}`);
+    console.log(`   cache_write:  ${usage.cache_creation_input_tokens ?? 0}`);
+    console.log(`   output:       ${usage.output_tokens ?? 0}`);
+    return input;
+  }
+  console.log("   (no usage reported)");
+  return null;
+}
+
+async function promptCompare(sdk) {
+  console.log("=== System-Prompt Mode Comparison (real API calls) ===");
+  const model = resolveModel();
+  console.log(`model: ${model}\n`);
+
+  const wechatAppend = [
+    "You are an AI relay bot connected to WeChat.",
+    "Reply in Chinese (Simplified). Keep replies concise and conversational.",
+  ].join("\n");
+
+  const defaultInput = await runQuery(
+    sdk,
+    "默认模式：官方 claude_code 预设 + 微信功能块（现状）",
+    { type: "preset", preset: "claude_code", append: wechatAppend },
+  );
+
+  const customInput = await runQuery(
+    sdk,
+    "替换模式：自定义 md 字符串 + 微信功能块",
+    `${wechatAppend}\n\n（此处为自定义系统提示词示例：你是接入微信的 AI 助手。）`,
+  );
+
+  if (defaultInput != null && customInput != null) {
+    const saved = defaultInput - customInput;
+    console.log(`\n每轮输入 token 差异：默认 ${defaultInput} → 自定义 ${customInput}（省 ${saved}）`);
+  }
+}
+
 async function main() {
+  const compareMode = process.argv.includes("--prompt-compare");
+  loadEnvFiles();
+
+  if (compareMode) {
+    const sdk = await import("@anthropic-ai/claude-agent-sdk");
+    await promptCompare(sdk);
+    return;
+  }
+
   console.log("=== Claude Agent SDK Connectivity Check ===\n");
 
   // 1. Check environment

@@ -35,12 +35,15 @@
 ### 3.1 始终拒绝（ALWAYS_DENY_TOOLS）
 
 ```
-AskUserQuestion  ExitPlanMode                    （计划/交互类）
+AskUserQuestion  EnterPlanMode  ExitPlanMode      （计划/交互类）
 CronCreate  CronDelete  CronList  ScheduleWakeup （定时类）
 Task  Agent  EnterWorktree  ExitWorktree         （子代理/工作树类）
+Skill  TaskStop                                  （官方技能工具/终止后台任务——本项目用不上）
 ```
 
 这些工具要么需要前端交互（微信里没有确认 UI），要么会派生超出本权限模型约束的新进程/新工作树。命中即 deny，不进入后续判定。
+
+此外，这份名单会同时通过 SDK 的 `disallowedTools` 把工具**整体移出模型工具集**——schema 不再注入、模型根本看不见，杜绝"调用→拒绝→换路重试"的空转轮次；`canUseTool` 运行时判定保留作为兜底防线。名单只维护在 `permissions.ts` 顶部的 `ALWAYS_DENY_TOOL_NAMES` 常量（两处共用）。
 
 ### 3.2 始终允许（ALWAYS_ALLOW_TOOLS）
 

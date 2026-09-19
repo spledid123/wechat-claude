@@ -15,9 +15,16 @@ export interface ClaudePermissionPolicy {
 
 export type ClaudePermissionResult = PermissionResult;
 
-const ALWAYS_DENY_TOOLS = new Set([
+/**
+ * Tools that can never be used in the unattended WeChat scenario. Besides the
+ * runtime canUseTool denial, these are also passed to the SDK as
+ * disallowedTools so the model never sees them in its toolset at all (no
+ * schema tokens, no wasted call→deny→retry turns).
+ */
+export const ALWAYS_DENY_TOOL_NAMES = [
   "AskUserQuestion",
   "ExitPlanMode",
+  "EnterPlanMode",
   "CronCreate",
   "CronDelete",
   "CronList",
@@ -26,7 +33,15 @@ const ALWAYS_DENY_TOOLS = new Set([
   "Agent",
   "EnterWorktree",
   "ExitWorktree",
-]);
+  // Skill is Claude Code's own registered-skill tool; this project ships
+  // skills as plain workspace files the model Reads, so the tool is dead here.
+  "Skill",
+  // TaskOutput/TaskGet/TaskList stay allowed (read-only task book); stopping
+  // is not something an unattended session should do.
+  "TaskStop",
+] as const;
+
+const ALWAYS_DENY_TOOLS = new Set<string>(ALWAYS_DENY_TOOL_NAMES);
 
 /** In-process bridge MCP tools — handler-side effects are workspace-confined. */
 const BRIDGE_MCP_TOOLS = [

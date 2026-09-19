@@ -93,10 +93,16 @@ export class ClaudeManager {
     spec: SessionSpec,
     ctx: PromptContext,
     mcpServers?: Record<string, unknown>,
+    customPromptText?: string,
   ): Promise<ClaudeQueryResult> {
     const session = this.getOrCreateSession(spec);
 
     const systemAppend = buildSystemPromptAppend(ctx);
+    // Custom system-prompt mode: the md file content replaces the Claude Code
+    // preset, with the WeChat instruction blocks still appended after it.
+    const systemPromptOverride = customPromptText?.trim()
+      ? `${customPromptText.trim()}\n\n${systemAppend}`
+      : undefined;
     const userMessage: UserMessageContent = (ctx.images?.length ?? 0) > 0
       ? buildUserBlocksMessage(ctx)
       : buildUserMessage(ctx);
@@ -104,7 +110,12 @@ export class ClaudeManager {
     const startedAt = new Date();
     await this.acquire();
     try {
-      const result = await session.querySimple(userMessage, systemAppend, mcpServers);
+      const result = await session.querySimple(
+        userMessage,
+        systemAppend,
+        mcpServers,
+        systemPromptOverride,
+      );
       this.recordQuery(startedAt, session, result.turnCount, null, result.usage);
       return result;
     } catch (err) {

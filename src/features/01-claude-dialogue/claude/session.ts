@@ -11,7 +11,7 @@ import type {
   UserMessageContent,
   UserBlocksMessage,
 } from "./types.js";
-import { createClaudePermissionPolicy } from "./permissions.js";
+import { createClaudePermissionPolicy, ALWAYS_DENY_TOOL_NAMES } from "./permissions.js";
 import { recordAgentEvent } from "./events.js";
 import { getDiagnosticsFile } from "../../../runtime/logger.js";
 import { getOfficialDataDir, resolveClaudeExecutable } from "../../../runtime/paths.js";
@@ -50,15 +50,21 @@ export class ClaudeSession {
   /**
    * Send a single user message and get the AI's text response.
    *
-   * @param userMessage    Plain text, or a multimodal message with inline
-   *                       image blocks (direct image mode).
-   * @param systemAppend   Extra instructions appended to the system prompt.
-   * @param mcpServers     Optional MCP server config for tools.
+   * @param userMessage          Plain text, or a multimodal message with inline
+   *                             image blocks (direct image mode).
+   * @param systemAppend         Extra instructions appended to the system prompt.
+   * @param mcpServers           Optional MCP server config for tools.
+   * @param systemPromptOverride When set, replaces the built-in Claude Code
+   *                             system prompt entirely (SDK string form).
+   *                             systemAppend is ignored in that case — callers
+   *                             compose the override from their own text plus
+   *                             the WeChat blocks.
    */
   async querySimple(
     userMessage: UserMessageContent,
     systemAppend?: string,
     mcpServers?: Record<string, unknown>,
+    systemPromptOverride?: string,
   ): Promise<ClaudeQueryResult> {
     const { query } = await import("@anthropic-ai/claude-agent-sdk");
 
@@ -94,15 +100,24 @@ export class ClaudeSession {
           allowedTools: this.allowedTools,
           canUseTool: this.canUseTool,
           sandbox: this.sandbox,
-          settings: this.settings,
+          // Auto-memory is off: its instructions eat ~3.2k tokens of the
+          // preset, its directory (~/.claude/projects/...) sits outside the
+          // workspace (writes would be denied anyway), and global Read could
+          // otherwise surface memories from unrelated projects.
+          settings: { autoMemoryEnabled: false, ...this.settings },
           ...(claudeExecutable ? { pathToClaudeCodeExecutable: claudeExecutable } : {}),
-          systemPrompt: systemAppend
-            ? {
-              type: "preset",
-              preset: "claude_code",
-              append: systemAppend,
-            }
-            : undefined,
+          systemPrompt: systemPromptOverride
+            ? systemPromptOverride
+            : systemAppend
+              ? {
+                type: "preset",
+                preset: "claude_code",
+                append: systemAppend,
+              }
+              : undefined,
+          // Always-denied tools are removed from the model's toolset entirely
+          // (the runtime canUseTool policy stays as a defense-in-depth backstop).
+          disallowedTools: [...ALWAYS_DENY_TOOL_NAMES],
           maxTurns: this.maxTurns,
           includePartialMessages: true,
           abortController: this.abortController,

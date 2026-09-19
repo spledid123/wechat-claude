@@ -304,7 +304,8 @@ export class Bridge {
       contextToken: first.contextToken,
       session: spec,
     });
-    const result = await this.claude.processMessage(spec, ctx, mcpServers);
+    const customPromptText = this.loadCustomSystemPrompt(config);
+    const result = await this.claude.processMessage(spec, ctx, mcpServers, customPromptText);
     let reply = result.text.trim() || "(empty response)";
     if (this.scheduler) {
       const scheduledDraft = this.scheduler.createDraftFromAiJson(
@@ -484,6 +485,25 @@ export class Bridge {
 
   private getRuntimeConfig(): RuntimeConfig {
     return this.getConfig?.() ?? DEFAULT_CONFIG;
+  }
+
+  /**
+   * Read the custom system-prompt file configured via the admin panel.
+   * Read fresh on every message so panel saves apply immediately. Any failure
+   * (missing file, unreadable) logs an ERROR and falls back to the default
+   * preset mode — never interrupts the conversation.
+   */
+  private loadCustomSystemPrompt(config: RuntimeConfig): string | undefined {
+    const file = config.systemPromptFile;
+    if (!file) return undefined;
+    try {
+      const text = fs.readFileSync(file, "utf-8");
+      if (!text.trim()) return undefined;
+      return text;
+    } catch (err) {
+      getRootLogger().error(`自定义系统提示词文件读取失败，回落默认模式：${file}`, err);
+      return undefined;
+    }
   }
 
   /** A PDF whose text layer is empty or near-empty — vision fallback applies. */
